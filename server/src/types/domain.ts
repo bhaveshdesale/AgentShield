@@ -103,6 +103,17 @@ export interface PolicyResult {
   checks: PolicyCheck[];
 }
 
+export interface PolicyEvaluationResult extends PolicyResult {
+  reason: string;
+  verifiedAmountInPaise: number;
+  approvalRequired: boolean;
+}
+
+export interface ActionProposalInput extends ActionProposal {
+  referenceId: string;
+  discountPercent?: number;
+}
+
 export interface AgentAction {
   conversationId: string;
   action: AgentActionType;
