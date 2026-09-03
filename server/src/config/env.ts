@@ -38,6 +38,8 @@ export function loadEnv(): Env {
     PORT: parsePort(process.env.PORT),
     MONGODB_URI: requireEnv("MONGODB_URI"),
     LLM_API_KEY: readOptional("LLM_API_KEY"),
+    LLM_BASE_URL: readOptional("LLM_BASE_URL"),
+    LLM_MODEL: readOptional("LLM_MODEL"),
     RAZORPAY_KEY_ID: readOptional("RAZORPAY_KEY_ID"),
     RAZORPAY_KEY_SECRET: readOptional("RAZORPAY_KEY_SECRET"),
     RAZORPAY_WEBHOOK_SECRET: readOptional("RAZORPAY_WEBHOOK_SECRET"),
