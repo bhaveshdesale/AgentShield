@@ -13,12 +13,9 @@ export function createApp(): express.Express {
 
   app.use(
     cors({
-      origin: "http://localhost:5173",
+    origin: process.env.CLIENT_URL || "http://localhost:5173",
     }),
   );
-
-  // Razorpay signs the exact request bytes. This parser is deliberately scoped
-  // to the webhook endpoint so all other API routes retain normal JSON bodies.
   app.use(
     "/api/webhooks",
     express.raw({ type: "application/json", limit: "100kb" }),
