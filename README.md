@@ -19,7 +19,7 @@
   <a href="#key-features">Key Features</a> •
   <a href="#getting-started">Getting Started</a> •
   <a href="#api">API</a> •
-  <a href="#contributing">Contributing</a>
+  <a href="./CONTRIBUTING.md">Contributing</a>
 </p>
 
 ---
@@ -223,6 +223,7 @@ AgentShield/
 ├── server/                 # Express + TypeScript backend
 ├── AGENTSHIELD_SRS.md      # Software requirements specification
 ├── README.md
+├── CONTRIBUTING.md
 └── assets/
     ├── logo.png
     └── demo.mp4
@@ -445,13 +446,7 @@ The goal is to keep the prototype focused on the trust boundary between AI agent
 
 ## Contributing
 
-AgentShield is intended to evolve as an open-source project. Contributions, ideas, bug reports, and improvements are welcome.
-
-```bash
-git checkout -b feature/your-feature
-```
-
-Make your changes, test them, and open a pull request. For larger changes, please open an issue first to discuss the proposed direction.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to propose changes, report bugs, and submit pull requests.
 
 ---
 
