@@ -308,6 +308,29 @@ describe("evaluateAction", () => {
     );
     assert.equal(duplicate?.passed, false);
   });
+  it("blocks zero or negative quantity", async () => {
+  const zero = await evaluateAction(
+    paymentProposal({
+      items: [{ productId: coffeeKitId, quantity: 0 }],
+      proposedAmountInPaise: 0,
+      referenceId: "test-quantity-zero-010",
+    }),
+    BASE_POLICY,
+  );
+
+  assert.equal(zero.decision, "BLOCK");
+
+  const negative = await evaluateAction(
+    paymentProposal({
+      items: [{ productId: coffeeKitId, quantity: -1 }],
+      proposedAmountInPaise: -179900,
+      referenceId: "test-quantity-negative-011",
+    }),
+    BASE_POLICY,
+  );
+
+  assert.equal(negative.decision, "BLOCK");
+});
 
   it("blocks a missing product", async () => {
     const result = await evaluateAction(

@@ -203,8 +203,7 @@ export async function proposePayment(
     proposedAmountInPaise,
     reason,
     requiresApproval: true,
-    referenceId: `agent-${randomUUID()}`,
-  };
+referenceId: `agent-${randomUUID().replace(/-/g, "")}`,  };
 }
 
 // ---------------------------------------------------------------------------
@@ -403,13 +402,41 @@ async function callLlm(message: string, catalog: CatalogProduct[]): Promise<Agen
     });
 
     if (!response.ok) {
-      logger.error("LLM request failed", { status: response.status });
-      throw new AppError(
-        `LLM request failed with status ${response.status}.`,
-        502,
-        "LLM_UNAVAILABLE"
-      );
-    }
+  const errorBody = await response.text().catch(() => "");
+
+  let providerMessage = "";
+  let providerCode = "";
+  let providerType = "";
+
+  try {
+    const parsed = JSON.parse(errorBody) as {
+      error?: {
+        message?: string;
+        code?: string;
+        type?: string;
+      };
+    };
+
+    providerMessage = parsed.error?.message ?? "";
+    providerCode = parsed.error?.code ?? "";
+    providerType = parsed.error?.type ?? "";
+  } catch {
+    // Ignore non-JSON provider responses.
+  }
+
+  logger.error("LLM request failed", {
+    status: response.status,
+    providerMessage: providerMessage.slice(0, 300),
+    providerCode,
+    providerType,
+  });
+
+  throw new AppError(
+    `LLM request failed with status ${response.status}.`,
+    502,
+    "LLM_UNAVAILABLE"
+  );
+}
 
     const payload = (await response.json()) as {
       choices?: { message?: { content?: string } }[];
