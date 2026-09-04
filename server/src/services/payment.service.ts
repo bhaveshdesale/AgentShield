@@ -7,7 +7,7 @@ import { AgentActionModel } from "../models/AgentAction";
 import { AppError } from "../utils/AppError";
 import { logger } from "../utils/logger";
 import { evaluateAction } from "./policy.service";
-import type { ActionProposalInput, Order } from "../types/domain";
+import type { ActionProposalInput, Order, OrderStatus } from "../types/domain";
 
 /**
  * Razorpay TEST-MODE payment service + explicit approval flow.
@@ -347,16 +347,309 @@ export async function approveActionAndCreatePayment(options: {
       status: order.status,
     };
   } catch (error) {
+    if (error instanceof AppError && error.code === "RAZORPAY_ERROR") {
+      if (order) {
+        order.status = "FAILED";
+        await order.save();
+      }
+      claimedAction.executionStatus = "FAILED";
+      await claimedAction.save();
+      await recordAudit("PAYMENT_EXECUTION_FAILED", {
+        executionState: "FAILED",
+        errorCategory: error.code,
+      }, String(claimedAction._id));
+      throw error;
+    }
+
     if (order) {
-      order.status = "FAILED";
+      order.status = "UNKNOWN";
       await order.save();
     }
-    claimedAction.executionStatus = "FAILED";
+    claimedAction.executionStatus = "UNKNOWN";
     await claimedAction.save();
-    await recordAudit("PAYMENT_EXECUTION_FAILED", {
-      executionState: "FAILED",
-      errorCategory: error instanceof AppError ? error.code : "PAYMENT_EXECUTION_ERROR",
+    await recordAudit("PAYMENT_EXECUTION_UNKNOWN", {
+      executionState: "UNKNOWN",
+      errorCategory: error instanceof Error ? error.message : "PAYMENT_EXECUTION_UNKNOWN",
     }, String(claimedAction._id));
+    throw error;
+  }
+}
+
+export interface RazorpayPaymentLinkDetail {
+  id: string;
+  short_url: string;
+  status: string;
+  reference_id?: string;
+}
+
+export async function lookupRazorpayPaymentLink(options: {
+  paymentLinkId?: string;
+  referenceId?: string;
+  credentials?: RazorpayCredentials;
+}): Promise<RazorpayPaymentLinkDetail | null> {
+  const credentials = options.credentials ?? getRazorpayCredentials();
+
+  if (options.paymentLinkId && options.paymentLinkId.trim().length > 0) {
+    return lookupPaymentLinkById(options.paymentLinkId, credentials);
+  }
+
+  if (options.referenceId && options.referenceId.trim().length > 0) {
+    return lookupPaymentLinkByReference(options.referenceId, credentials);
+  }
+
+  return null;
+}
+
+async function lookupPaymentLinkById(id: string, credentials: RazorpayCredentials): Promise<RazorpayPaymentLinkDetail | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RAZORPAY_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${RAZORPAY_API_BASE}/payment_links/${encodeURIComponent(id)}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${credentials.keyId}:${credentials.keySecret}`).toString("base64")}`,
+      },
+      signal: controller.signal,
+    });
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      let detail = `Razorpay lookup failed with status ${response.status}.`;
+      try {
+        const bodyText = await response.text();
+        const parsed = JSON.parse(bodyText) as { error?: { description?: string } };
+        if (parsed.error?.description) {
+          detail = parsed.error.description;
+        }
+      } catch {
+        // keep generic detail
+      }
+      throw new AppError(detail, 502, "RAZORPAY_ERROR");
+    }
+
+    const bodyText = await response.text().catch(() => "");
+    let link: RazorpayPaymentLinkDetail;
+    try {
+      link = JSON.parse(bodyText) as RazorpayPaymentLinkDetail;
+    } catch {
+      throw new AppError("Razorpay returned an unparseable payment link detail.", 502, "RAZORPAY_ERROR");
+    }
+
+    if (typeof link.id !== "string" || link.id.length === 0) {
+      throw new AppError("Razorpay returned an unexpected payment link detail.", 502, "RAZORPAY_ERROR");
+    }
+
+    return link;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function lookupPaymentLinkByReference(referenceId: string, credentials: RazorpayCredentials): Promise<RazorpayPaymentLinkDetail | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RAZORPAY_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${RAZORPAY_API_BASE}/payment_links?reference_id=${encodeURIComponent(referenceId)}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${credentials.keyId}:${credentials.keySecret}`).toString("base64")}`,
+      },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      let detail = `Razorpay lookup failed with status ${response.status}.`;
+      try {
+        const bodyText = await response.text();
+        const parsed = JSON.parse(bodyText) as { error?: { description?: string } };
+        if (parsed.error?.description) {
+          detail = parsed.error.description;
+        }
+      } catch {
+        // keep generic detail
+      }
+      throw new AppError(detail, 502, "RAZORPAY_ERROR");
+    }
+
+    const bodyText = await response.text().catch(() => "");
+    let parsed: { payment_links?: RazorpayPaymentLinkDetail[] };
+    try {
+      parsed = JSON.parse(bodyText) as { payment_links?: RazorpayPaymentLinkDetail[] };
+    } catch {
+      throw new AppError("Razorpay returned an unparseable payment link list.", 502, "RAZORPAY_ERROR");
+    }
+
+    const links = parsed.payment_links ?? [];
+    return links.length > 0 ? links[0] : null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function reconcilePayment(options: {
+  orderId: string;
+  credentials?: RazorpayCredentials;
+}): Promise<{ orderId: string; status: string; paymentLinkId?: string; paymentLink?: string }> {
+  if (!Types.ObjectId.isValid(options.orderId)) {
+    throw new AppError("Invalid order ID.", 400, "INVALID_ORDER_ID");
+  }
+
+  const order = await OrderModel.findById(options.orderId);
+  if (!order) {
+    throw new AppError("Order was not found.", 404, "ORDER_NOT_FOUND");
+  }
+
+  if (order.status !== "UNKNOWN") {
+    throw new AppError("Only orders in UNKNOWN state can be reconciled.", 409, "ORDER_NOT_UNKNOWN");
+  }
+
+  const action = await AgentActionModel.findOne({ referenceId: order.referenceId });
+  const actionId = action ? String(action._id) : null;
+
+  await recordAudit("RECOVERY_STARTED", { orderId: String(order._id) }, actionId);
+
+  const claimed = await OrderModel.findOneAndUpdate(
+    { _id: order._id, status: "UNKNOWN" },
+    { $set: { status: "RECOVERING" } },
+    { new: true }
+  );
+
+  if (!claimed) {
+    throw new AppError("Order is already being reconciled by another process.", 409, "ORDER_ALREADY_RECOVERING");
+  }
+
+  try {
+    const verifiedAmountInPaise = await calculateAuthoritativeAmount({
+      items: order.items.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity,
+      })),
+    });
+
+    let paymentLinkId = order.razorpayPaymentLinkId;
+    let paymentLink = order.razorpayPaymentLinkUrl;
+    let finalStatus: OrderStatus = "UNKNOWN";
+
+    let existing: RazorpayPaymentLinkDetail | null = null;
+    let lookupFailed = false;
+
+    try {
+      existing = await lookupRazorpayPaymentLink({
+        ...(order.razorpayPaymentLinkId ? { paymentLinkId: order.razorpayPaymentLinkId } : {}),
+        referenceId: order.referenceId,
+        ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
+      });
+    } catch (lookupError) {
+      lookupFailed = true;
+      await recordAudit("RECOVERY_UNRESOLVED", {
+        errorCategory: lookupError instanceof AppError ? lookupError.code : "RECOVERY_LOOKUP_ERROR",
+      }, actionId);
+    }
+
+    if (lookupFailed) {
+      await OrderModel.findByIdAndUpdate(order._id, { $set: { status: "UNKNOWN" } });
+      if (action) {
+        action.executionStatus = "UNKNOWN";
+        await action.save();
+      }
+      throw new AppError("Recovery lookup failed. Order remains in UNKNOWN state.", 502, "RECOVERY_LOOKUP_FAILED");
+    }
+
+    if (existing) {
+      paymentLinkId = existing.id;
+      paymentLink = existing.short_url;
+
+      await recordAudit("RECOVERY_PAYMENT_FOUND", {
+        razorpayIdentifier: existing.id,
+        referenceId: order.referenceId,
+      }, actionId);
+
+      if (existing.status === "paid" || existing.status === "captured") {
+        await recordAudit("RECOVERY_PAYMENT_CONFIRMED", {
+          razorpayIdentifier: existing.id,
+          paymentStatus: existing.status,
+        }, actionId);
+        finalStatus = "PAID";
+      } else {
+        finalStatus = "RECOVERED";
+      }
+    } else {
+      await recordAudit("RECOVERY_SAFE_RETRY", {
+        verifiedAmountInPaise,
+      }, actionId);
+
+      try {
+        const newPaymentLink = await createRazorpayPaymentLink({
+          amountInPaise: verifiedAmountInPaise,
+          referenceId: order.referenceId,
+          description: `AgentShield order ${order.referenceId}`,
+          ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
+        });
+
+        paymentLinkId = newPaymentLink.id;
+        paymentLink = newPaymentLink.short_url;
+        finalStatus = "AWAITING_PAYMENT";
+      } catch (retryError) {
+        if (retryError instanceof AppError && retryError.code === "RAZORPAY_ERROR") {
+          await OrderModel.findByIdAndUpdate(order._id, { $set: { status: "FAILED" } });
+          if (action) {
+            action.executionStatus = "FAILED";
+            await action.save();
+          }
+          await recordAudit("RECOVERY_RETRY_FAILED", {
+            errorCategory: retryError.code,
+          }, actionId);
+          throw retryError;
+        }
+
+        await OrderModel.findByIdAndUpdate(order._id, { $set: { status: "UNKNOWN" } });
+        if (action) {
+          action.executionStatus = "UNKNOWN";
+          await action.save();
+        }
+        await recordAudit("RECOVERY_RETRY_FAILED", {
+          errorCategory: retryError instanceof Error ? retryError.message : "RECOVERY_RETRY_ERROR",
+        }, actionId);
+        throw new AppError("Recovery retry failed. Order remains in UNKNOWN state.", 502, "RECOVERY_RETRY_FAILED");
+      }
+    }
+
+    order.razorpayPaymentLinkId = paymentLinkId;
+    order.razorpayPaymentLinkUrl = paymentLink;
+    order.status = finalStatus;
+    await order.save();
+
+    if (action) {
+      if (finalStatus === "PAID") {
+        action.executionStatus = "SUCCEEDED";
+      } else if (finalStatus === "RECOVERED") {
+        action.executionStatus = "RECOVERED";
+      } else if (finalStatus === "AWAITING_PAYMENT") {
+        action.executionStatus = "SUCCEEDED";
+      }
+      await action.save();
+    }
+
+    return {
+      orderId: String(order._id),
+      status: finalStatus,
+      paymentLinkId,
+      paymentLink,
+    };
+  } catch (error) {
+    if (error instanceof AppError && error.code === "RECOVERY_LOOKUP_FAILED") {
+      throw error;
+    }
+    await OrderModel.findByIdAndUpdate(order._id, { $set: { status: "UNKNOWN" } });
+    if (action) {
+      action.executionStatus = "UNKNOWN";
+      await action.save();
+    }
     throw error;
   }
 }

@@ -9,7 +9,8 @@ import { AuditLogModel } from "../models/AuditLog";
 import { MerchantModel } from "../models/Merchant";
 import { OrderModel } from "../models/Order";
 import { ProductModel } from "../models/Product";
-import { approveActionAndCreatePayment } from "../services/payment.service";
+import { Types } from "mongoose";
+import { reconcilePayment, approveActionAndCreatePayment } from "../services/payment.service";
 
 const TEST_DB_NAME = "agentshield_payment_test";
 const originalFetch = globalThis.fetch;
@@ -194,5 +195,285 @@ describe("M5 approval and Razorpay execution", () => {
     assert.equal(action?.executionStatus, "FAILED");
     assert.equal(order?.status, "FAILED");
     assert.ok(await AuditLogModel.exists({ actionId, event: "PAYMENT_EXECUTION_FAILED" }));
+  });
+});
+
+describe("M7 payment UNKNOWN-state recovery and reconciliation", () => {
+  before(async () => {
+    await connectDatabase(resolveTestUri());
+  });
+
+  beforeEach(async () => {
+    await Promise.all([
+      AgentActionModel.deleteMany({}),
+      AuditLogModel.deleteMany({}),
+      MerchantModel.deleteMany({}),
+      OrderModel.deleteMany({}),
+      ProductModel.deleteMany({}),
+    ]);
+    await MerchantModel.create({
+      name: "Payment Test Store",
+      policy: {
+        maxTransactionAmount: 500000,
+        maxDiscountPercent: 10,
+        requireHumanApproval: true,
+        allowRefunds: false,
+        allowPayouts: false,
+      },
+    });
+    const coffeeKit = await ProductModel.create({
+      name: "Artisan Coffee Kit",
+      description: "Test product",
+      priceInPaise: 179900,
+      currency: "INR",
+      category: "coffee",
+      tags: ["coffee"],
+      inventory: 5,
+      frequentlyBoughtWith: [],
+    });
+    coffeeKitId = String(coffeeKit._id);
+  });
+
+  after(async () => {
+    globalThis.fetch = originalFetch;
+    await disconnectDatabase();
+  });
+
+  it("sets order to UNKNOWN when Razorpay call times out", async () => {
+    globalThis.fetch = async () => {
+      const error = new Error("The operation was aborted.");
+      error.name = "AbortError";
+      throw error;
+    };
+
+    const validated = await validate(proposal("m7-timeout-001"));
+    const actionId = (validated.body as { actionId: string }).actionId;
+    await assert.rejects(() => approveActionAndCreatePayment({ actionId, credentials: { keyId: "test_id", keySecret: "test_secret" } }));
+
+    const [action, order] = await Promise.all([
+      AgentActionModel.findById(actionId),
+      OrderModel.findOne({ referenceId: "m7-timeout-001" }),
+    ]);
+    assert.equal(action?.executionStatus, "UNKNOWN");
+    assert.equal(order?.status, "UNKNOWN");
+    assert.ok(await AuditLogModel.exists({ actionId, event: "PAYMENT_EXECUTION_UNKNOWN" }));
+  });
+
+  it("sets order to FAILED for known Razorpay rejection", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: { description: "declined" } }), { status: 500 });
+    const validated = await validate(proposal("m7-rejection-002"));
+    const actionId = (validated.body as { actionId: string }).actionId;
+    await assert.rejects(() => approveActionAndCreatePayment({ actionId, credentials: { keyId: "test_id", keySecret: "test_secret" } }));
+    const [action, order] = await Promise.all([
+      AgentActionModel.findById(actionId),
+      OrderModel.findOne({ referenceId: "m7-rejection-002" }),
+    ]);
+    assert.equal(action?.executionStatus, "FAILED");
+    assert.equal(order?.status, "FAILED");
+  });
+
+  it("recovers an UNKNOWN order with an existing paid payment link", async () => {
+    await OrderModel.create({
+      items: [{ productId: new Types.ObjectId(coffeeKitId), quantity: 1, unitPriceInPaise: 179900 }],
+      amountInPaise: 179900,
+      currency: "INR",
+      status: "UNKNOWN",
+      referenceId: "m7-recover-003",
+      razorpayPaymentLinkId: "plink_existing_003",
+      razorpayPaymentLinkUrl: "https://rzp.test/plink_existing_003",
+    });
+
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      id: "plink_existing_003",
+      short_url: "https://rzp.test/plink_existing_003",
+      status: "paid",
+    }), { status: 200 });
+
+    const order = await OrderModel.findOne({ referenceId: "m7-recover-003" });
+    const result = await reconcilePayment({ orderId: String(order!._id), credentials: { keyId: "test_id", keySecret: "test_secret" } });
+
+    assert.equal(result.status, "PAID");
+    assert.equal(result.paymentLinkId, "plink_existing_003");
+    const updated = await OrderModel.findOne({ referenceId: "m7-recover-003" });
+    assert.equal(updated?.status, "PAID");
+    assert.ok(await AuditLogModel.exists({ event: "RECOVERY_STARTED" }));
+    assert.ok(await AuditLogModel.exists({ event: "RECOVERY_PAYMENT_FOUND" }));
+    assert.ok(await AuditLogModel.exists({ event: "RECOVERY_PAYMENT_CONFIRMED" }));
+  });
+
+  it("reuses the existing payment link when found", async () => {
+    await OrderModel.create({
+      items: [{ productId: new Types.ObjectId(coffeeKitId), quantity: 1, unitPriceInPaise: 179900 }],
+      amountInPaise: 179900,
+      currency: "INR",
+      status: "UNKNOWN",
+      referenceId: "m7-reuse-004",
+      razorpayPaymentLinkId: "plink_reuse_004",
+      razorpayPaymentLinkUrl: "https://rzp.test/plink_reuse_004",
+    });
+
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      id: "plink_reuse_004",
+      short_url: "https://rzp.test/plink_reuse_004",
+      status: "created",
+    }), { status: 200 });
+
+    const order = await OrderModel.findOne({ referenceId: "m7-reuse-004" });
+    const result = await reconcilePayment({ orderId: String(order!._id), credentials: { keyId: "test_id", keySecret: "test_secret" } });
+
+    assert.equal(result.status, "RECOVERED");
+    assert.equal(result.paymentLinkId, "plink_reuse_004");
+    const updated = await OrderModel.findOne({ referenceId: "m7-reuse-004" });
+    assert.equal(updated?.razorpayPaymentLinkId, "plink_reuse_004");
+  });
+
+  it("returns UNKNOWN when lookup fails and does not retry", async () => {
+    await OrderModel.create({
+      items: [{ productId: new Types.ObjectId(coffeeKitId), quantity: 1, unitPriceInPaise: 179900 }],
+      amountInPaise: 179900,
+      currency: "INR",
+      status: "UNKNOWN",
+      referenceId: "m7-unresolved-005",
+    });
+
+    globalThis.fetch = async () => {
+      const error = new Error("Network connection lost.");
+      error.name = "TypeError";
+      throw error;
+    };
+
+    const order = await OrderModel.findOne({ referenceId: "m7-unresolved-005" });
+    await assert.rejects(() => reconcilePayment({ orderId: String(order!._id), credentials: { keyId: "test_id", keySecret: "test_secret" } }));
+
+    const updated = await OrderModel.findOne({ referenceId: "m7-unresolved-005" });
+    assert.equal(updated?.status, "UNKNOWN");
+    assert.ok(await AuditLogModel.exists({ event: "RECOVERY_UNRESOLVED" }));
+  });
+
+  it("performs safe retry only after successful empty lookup", async () => {
+    await OrderModel.create({
+      items: [{ productId: new Types.ObjectId(coffeeKitId), quantity: 1, unitPriceInPaise: 179900 }],
+      amountInPaise: 179900,
+      currency: "INR",
+      status: "UNKNOWN",
+      referenceId: "m7-safe-retry-006",
+    });
+
+    let fetchCalls = 0;
+    globalThis.fetch = async (input: unknown) => {
+      fetchCalls += 1;
+      const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : "";
+
+      if (urlStr.includes("/payment_links?reference_id=")) {
+        return new Response(JSON.stringify({ payment_links: [] }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({ id: "plink_retry_006", short_url: "https://rzp.test/plink_retry_006", status: "created" }), { status: 200 });
+    };
+
+    const order = await OrderModel.findOne({ referenceId: "m7-safe-retry-006" });
+    const result = await reconcilePayment({ orderId: String(order!._id), credentials: { keyId: "test_id", keySecret: "test_secret" } });
+
+    assert.equal(result.status, "AWAITING_PAYMENT");
+    assert.equal(result.paymentLinkId, "plink_retry_006");
+    assert.equal(fetchCalls, 2);
+    const updated = await OrderModel.findOne({ referenceId: "m7-safe-retry-006" });
+    assert.equal(updated?.status, "AWAITING_PAYMENT");
+    assert.ok(await AuditLogModel.exists({ event: "RECOVERY_SAFE_RETRY" }));
+  });
+
+  it("protects against concurrent recovery", async () => {
+    await OrderModel.create({
+      items: [{ productId: new Types.ObjectId(coffeeKitId), quantity: 1, unitPriceInPaise: 179900 }],
+      amountInPaise: 179900,
+      currency: "INR",
+      status: "UNKNOWN",
+      referenceId: "m7-concurrent-007",
+      razorpayPaymentLinkId: "plink_concurrent_007",
+      razorpayPaymentLinkUrl: "https://rzp.test/plink_concurrent_007",
+    });
+
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      id: "plink_concurrent_007",
+      short_url: "https://rzp.test/plink_concurrent_007",
+      status: "created",
+    }), { status: 200 });
+
+    const order = await OrderModel.findOne({ referenceId: "m7-concurrent-007" });
+    const orderId = String(order!._id);
+
+    const first = await reconcilePayment({ orderId, credentials: { keyId: "test_id", keySecret: "test_secret" } });
+    assert.equal(first.status, "RECOVERED");
+
+    await assert.rejects(
+      () => reconcilePayment({ orderId, credentials: { keyId: "test_id", keySecret: "test_secret" } }),
+      (error: unknown) => error instanceof Error && error.message.includes("UNKNOWN state")
+    );
+  });
+
+  it("rejects reconciliation for non-UNKNOWN orders", async () => {
+    await OrderModel.create({
+      items: [{ productId: new Types.ObjectId(coffeeKitId), quantity: 1, unitPriceInPaise: 179900 }],
+      amountInPaise: 179900,
+      currency: "INR",
+      status: "AWAITING_PAYMENT",
+      referenceId: "m7-non-unknown-008",
+    });
+
+    const order = await OrderModel.findOne({ referenceId: "m7-non-unknown-008" });
+    await assert.rejects(
+      () => reconcilePayment({ orderId: String(order!._id), credentials: { keyId: "test_id", keySecret: "test_secret" } }),
+      (error: unknown) => error instanceof Error && error.message.includes("UNKNOWN state")
+    );
+  });
+
+  it("records recovery audit events", async () => {
+    await OrderModel.create({
+      items: [{ productId: new Types.ObjectId(coffeeKitId), quantity: 1, unitPriceInPaise: 179900 }],
+      amountInPaise: 179900,
+      currency: "INR",
+      status: "UNKNOWN",
+      referenceId: "m7-audit-009",
+      razorpayPaymentLinkId: "plink_audit_009",
+      razorpayPaymentLinkUrl: "https://rzp.test/plink_audit_009",
+    });
+
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      id: "plink_audit_009",
+      short_url: "https://rzp.test/plink_audit_009",
+      status: "created",
+    }), { status: 200 });
+
+    const order = await OrderModel.findOne({ referenceId: "m7-audit-009" });
+    await reconcilePayment({ orderId: String(order!._id), credentials: { keyId: "test_id", keySecret: "test_secret" } });
+
+    assert.ok(await AuditLogModel.exists({ event: "RECOVERY_STARTED" }));
+    assert.ok(await AuditLogModel.exists({ event: "RECOVERY_PAYMENT_FOUND" }));
+  });
+
+  it("recalculates authoritative amount before safe retry", async () => {
+    await OrderModel.create({
+      items: [{ productId: new Types.ObjectId(coffeeKitId), quantity: 1, unitPriceInPaise: 179900 }],
+      amountInPaise: 179900,
+      currency: "INR",
+      status: "UNKNOWN",
+      referenceId: "m7-amount-010",
+    });
+
+    await ProductModel.findByIdAndUpdate(coffeeKitId, { priceInPaise: 99900 });
+
+    globalThis.fetch = async (input: unknown) => {
+      const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : "";
+      if (urlStr.includes("/payment_links?reference_id=")) {
+        return new Response(JSON.stringify({ payment_links: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ id: "plink_amount_010", short_url: "https://rzp.test/plink_amount_010", status: "created" }), { status: 200 });
+    };
+
+    const order = await OrderModel.findOne({ referenceId: "m7-amount-010" });
+    const result = await reconcilePayment({ orderId: String(order!._id), credentials: { keyId: "test_id", keySecret: "test_secret" } });
+
+    assert.equal(result.status, "AWAITING_PAYMENT");
+    assert.ok(await AuditLogModel.exists({ event: "RECOVERY_SAFE_RETRY", "details.verifiedAmountInPaise": 99900 }));
   });
 });
