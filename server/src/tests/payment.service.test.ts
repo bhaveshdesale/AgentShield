@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it } from "node:test";
-import type { NextFunction, Request, Response } from "express";
+import type { NextFunction, Request, Response as ExpressResponse } from "express";
 import "../config/env";
 import { connectDatabase, disconnectDatabase } from "../config/db";
 import { validateAction } from "../controllers/action.controller";
@@ -41,7 +41,7 @@ async function validate(body: Record<string, unknown>): Promise<{ status: number
   const next: NextFunction = (error?: unknown) => {
     forwarded = error;
   };
-  await validateAction({ body } as Request, res as unknown as Response, next);
+  await validateAction({ body } as Request, res as unknown as ExpressResponse, next);
   if (forwarded) {
     throw forwarded;
   }

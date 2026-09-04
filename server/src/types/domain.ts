@@ -9,6 +9,7 @@ export const ORDER_STATUSES = [
   "PAID",
   "FAILED",
   "UNKNOWN",
+  "RECOVERING",
   "RECOVERED",
   "CANCELLED",
 ] as const;
@@ -29,6 +30,7 @@ export const EXECUTION_STATUSES = [
   "SUCCEEDED",
   "FAILED",
   "UNKNOWN",
+  "RECOVERING",
   "RECOVERED",
   "BLOCKED",
 ] as const;

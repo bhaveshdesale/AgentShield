@@ -456,6 +456,7 @@ async function fallbackAgent(input: { message: string; conversationId: string })
   const available = inBudget.filter((p) => p.inventory > 0);
   const candidates = available.length > 0 ? available : inBudget;
 
+  const bestMatch = candidates[0];
   const recommendations: AgentRecommendation[] = candidates.slice(0, 3).map((product) => ({
     productId: product.productId,
     name: product.name,
@@ -466,10 +467,21 @@ async function fallbackAgent(input: { message: string; conversationId: string })
         : `Matches your search (₹${(product.priceInPaise / 100).toLocaleString("en-IN")}).`,
   }));
 
+  // The deterministic fallback also performs the SRS cross-sell responsibility.
+  // Related products come from the database's frequentlyBoughtWith relation.
+  if (bestMatch) {
+    const crossSell = await recommendProducts(bestMatch.productId, 2);
+    for (const recommendation of crossSell) {
+      if (!recommendations.some((item) => item.productId === recommendation.productId)) {
+        recommendations.push(recommendation);
+      }
+      if (recommendations.length >= 5) break;
+    }
+  }
+
   let proposal: ActionProposalInput | undefined;
   let reply: string;
 
-  const bestMatch = candidates[0];
   if (wantsPurchase && bestMatch) {
     proposal = await proposePayment(
       [{ productId: bestMatch.productId, quantity: 1 }],

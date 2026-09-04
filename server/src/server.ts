@@ -34,7 +34,7 @@ function registerShutdown(server: Server): void {
 
     logger.info("Shutdown started", { signal });
 
-    server.close((closeError) => {
+    server.close((closeError: Error | undefined) => {
       if (closeError) {
         logger.error("HTTP server close failed", { error: closeError.message });
       } else {

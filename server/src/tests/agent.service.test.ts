@@ -121,13 +121,14 @@ describe("agent (deterministic fallback, LLM unconfigured)", () => {
     const result = await runAgentChat({ message: "Buy the Artisan Coffee Kit" });
 
     assert.ok(result.proposal, "expected a proposal");
-    assert.equal(result.proposal.action, "CREATE_PAYMENT");
-    assert.equal(result.proposal.proposedAmountInPaise, 179900);
-    assert.equal(result.proposal.requiresApproval, true);
-    assert.equal(result.proposal.items.length, 1);
-    assert.equal(String(result.proposal.items[0].productId), coffeeKitId);
+    const proposal = result.proposal;
+    assert.equal(proposal.action, "CREATE_PAYMENT");
+    assert.equal(proposal.proposedAmountInPaise, 179900);
+    assert.equal(proposal.requiresApproval, true);
+    assert.equal(proposal.items.length, 1);
+    assert.equal(String(proposal.items[0].productId), coffeeKitId);
     // The AI requires approval; the policy engine enforces it independently.
-    const policy = await evaluateAction(result.proposal, BASE_POLICY);
+    const policy = await evaluateAction(proposal, BASE_POLICY);
     assert.equal(policy.decision, "ALLOW");
     assert.equal(policy.approvalRequired, true);
   });

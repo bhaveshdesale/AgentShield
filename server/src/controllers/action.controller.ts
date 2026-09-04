@@ -2,7 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import mongoose, { Types } from "mongoose";
 import { AgentActionModel } from "../models/AgentAction";
 import { MerchantModel } from "../models/Merchant";
-import { approveActionAndCreatePayment, recordAudit } from "../services/payment.service";
+import { approveAction as approveActionService, recordAudit } from "../services/payment.service";
 import { evaluateAction } from "../services/policy.service";
 import { AppError } from "../utils/AppError";
 import { logger } from "../utils/logger";
@@ -162,7 +162,11 @@ export async function validateAction(
 
 export async function approveAction(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const result = await approveActionAndCreatePayment({ actionId: req.params.actionId });
+    const actionId = typeof req.body?.actionId === "string" ? req.body.actionId.trim() : "";
+    if (!actionId) {
+      throw new AppError("actionId is required.", 400, "INVALID_ACTION_ID");
+    }
+    const result = await approveActionService({ actionId });
     res.status(200).json(result);
   } catch (error) {
     if (error instanceof mongoose.mongo.MongoServerError && error.code === 11000) {

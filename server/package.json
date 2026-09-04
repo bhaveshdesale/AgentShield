@@ -11,9 +11,7 @@
     "seed": "tsx src/scripts/seed.ts",
     "test": "tsx --test src/tests/*.test.ts"
   },
-  "engines": {
-    "node": ">=18"
-  },
+  "engines": { "node": ">=18" },
   "dependencies": {
     "dotenv": "^16.4.7",
     "express": "^4.21.2",

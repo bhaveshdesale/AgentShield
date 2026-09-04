@@ -7,7 +7,7 @@ import { AgentActionModel } from "../models/AgentAction";
 import { AppError } from "../utils/AppError";
 import { logger } from "../utils/logger";
 import { evaluateAction } from "./policy.service";
-import type { ActionProposalInput, Order, OrderStatus } from "../types/domain";
+import type { ActionProposalInput, AgentAction, Order, OrderStatus } from "../types/domain";
 
 /**
  * Razorpay TEST-MODE payment service + explicit approval flow.
@@ -68,6 +68,39 @@ export async function createRazorpayPaymentLink(options: {
   credentials?: RazorpayCredentials;
 }): Promise<RazorpayPaymentLink> {
   const credentials = options.credentials ?? getRazorpayCredentials();
+
+  const referenceId = options.referenceId.trim();
+
+  // Razorpay Payment Links require a non-empty reference_id
+  // with a maximum length of 40 characters.
+  if (referenceId.length === 0) {
+    throw new AppError(
+      "Payment reference ID cannot be empty.",
+      400,
+      "INVALID_REFERENCE_ID"
+    );
+  }
+
+  if (referenceId.length > 40) {
+    throw new AppError(
+      "Payment reference ID must be 40 characters or fewer.",
+      400,
+      "INVALID_REFERENCE_ID"
+    );
+  }
+
+  // Razorpay expects the amount in paise as an integer.
+  if (
+    !Number.isInteger(options.amountInPaise) ||
+    options.amountInPaise < 100
+  ) {
+    throw new AppError(
+      "Payment amount must be an integer of at least 100 paise.",
+      400,
+      "INVALID_PAYMENT_AMOUNT"
+    );
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), RAZORPAY_TIMEOUT_MS);
 
@@ -84,36 +117,63 @@ export async function createRazorpayPaymentLink(options: {
         amount: options.amountInPaise,
         currency: "INR",
         accept_partial: false,
-        reference_id: options.referenceId,
+        reference_id: referenceId,
         description: options.description,
       }),
       signal: controller.signal,
     });
 
     const bodyText = await response.text().catch(() => "");
+
     if (!response.ok) {
-      // Never log or return the secret; only the status is preserved.
-      logger.error("Razorpay Payment Link request failed", {
-        status: response.status,
-        referenceId: options.referenceId,
-      });
-      let detail = "Razorpay rejected the payment link request.";
+      let detail = `Razorpay rejected the payment link request with status ${response.status}.`;
+      let razorpayCode: string | undefined;
+
       try {
-        const parsed = JSON.parse(bodyText) as { error?: { description?: string } };
+        const parsed = JSON.parse(bodyText) as {
+          error?: {
+            code?: string;
+            description?: string;
+          };
+        };
+
+        if (parsed.error?.code) {
+          razorpayCode = parsed.error.code;
+        }
+
         if (parsed.error?.description) {
           detail = parsed.error.description;
         }
       } catch {
-        // keep generic detail
+        // Keep generic detail if Razorpay returned non-JSON.
       }
+
+      logger.error("Razorpay Payment Link request failed", {
+        status: response.status,
+        referenceId,
+        razorpayCode,
+      });
+
       throw new AppError(detail, 502, "RAZORPAY_ERROR");
     }
 
-    const link = JSON.parse(bodyText) as RazorpayPaymentLink;
+    let link: RazorpayPaymentLink;
+
+    try {
+      link = JSON.parse(bodyText) as RazorpayPaymentLink;
+    } catch {
+      throw new AppError(
+        "Razorpay returned an unparseable payment link response.",
+        502,
+        "RAZORPAY_ERROR"
+      );
+    }
+
     if (
       typeof link.id !== "string" ||
+      link.id.length === 0 ||
       typeof link.short_url !== "string" ||
-      link.id.length === 0
+      link.short_url.length === 0
     ) {
       throw new AppError(
         "Razorpay returned an unexpected payment link response.",
@@ -121,7 +181,22 @@ export async function createRazorpayPaymentLink(options: {
         "RAZORPAY_ERROR"
       );
     }
+
     return link;
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new AppError(
+        "Razorpay payment link request timed out.",
+        504,
+        "RAZORPAY_TIMEOUT"
+      );
+    }
+
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -209,37 +284,15 @@ async function createOrderSnapshot(
  * Amounts, approval state and Razorpay identifiers come only from the server
  * database — never from the request body or the AI.
  */
-export async function approveActionAndCreatePayment(options: {
+export interface ActionApprovalResult {
+  success: true;
   actionId: string;
-  credentials?: RazorpayCredentials;
-}): Promise<ApprovalResult> {
-  if (!Types.ObjectId.isValid(options.actionId)) {
-    throw new AppError("Invalid action ID.", 400, "INVALID_ACTION_ID");
-  }
+  approvalStatus: "APPROVED";
+  executionStatus: "NOT_STARTED";
+}
 
-  const action = await AgentActionModel.findById(options.actionId);
-  if (!action) {
-    throw new AppError("Agent action was not found.", 404, "ACTION_NOT_FOUND");
-  }
-  if (action.action !== "CREATE_PAYMENT" || action.policyResult?.decision !== "ALLOW") {
-    throw new AppError("Only policy-allowed payment actions can be approved.", 409, "ACTION_NOT_ALLOWED");
-  }
-  if (!action.approvalRequired) {
-    throw new AppError("This action does not require explicit approval.", 409, "APPROVAL_NOT_REQUIRED");
-  }
-  if (action.approvalStatus !== "PENDING" || action.executionStatus !== "NOT_STARTED") {
-    throw new AppError("This action has already been approved or executed.", 409, "ACTION_ALREADY_PROCESSED");
-  }
-
-  const merchant = await MerchantModel.findOne().sort({ createdAt: 1 });
-  if (!merchant) {
-    throw new AppError("Merchant policy was not found.", 503, "MERCHANT_NOT_FOUND");
-  }
-
-  const proposal: ActionProposalInput = {
-    // `action.proposal` is a hydrated Mongoose subdocument. Spreading it copies
-    // document internals rather than its persisted schema fields, which would
-    // make a previously allowed action fail structural revalidation.
+function buildPersistedProposal(action: HydratedDocument<AgentAction>): ActionProposalInput {
+  return {
     action: action.proposal.action,
     items: action.proposal.items.map((item) => ({
       productId: item.productId,
@@ -251,36 +304,56 @@ export async function approveActionAndCreatePayment(options: {
     referenceId: action.referenceId,
     ...(action.discountPercent === undefined ? {} : { discountPercent: action.discountPercent }),
   };
-  const reevaluation = await evaluateAction(proposal, merchant.policy);
-  if (
-    reevaluation.decision !== "ALLOW" ||
-    reevaluation.verifiedAmountInPaise !== action.verifiedAmountInPaise
-  ) {
-    action.policyResult = { decision: reevaluation.decision, checks: reevaluation.checks };
+}
+
+async function revalidateAction(action: HydratedDocument<AgentAction>) {
+  const merchant = await MerchantModel.findOne().sort({ createdAt: 1 });
+  if (!merchant) {
+    throw new AppError("Merchant policy was not found.", 503, "MERCHANT_NOT_FOUND");
+  }
+  const proposal = buildPersistedProposal(action);
+  const result = await evaluateAction(proposal, merchant.policy);
+  if (result.decision !== "ALLOW" || result.verifiedAmountInPaise !== action.verifiedAmountInPaise) {
+    action.policyResult = { decision: result.decision, checks: result.checks };
     action.approvalStatus = "REJECTED";
     action.executionStatus = "BLOCKED";
     await action.save();
     await recordAudit(
       "ACTION_BLOCKED",
-      { policyDecision: reevaluation.decision, verifiedAmountInPaise: reevaluation.verifiedAmountInPaise },
+      { policyDecision: result.decision, verifiedAmountInPaise: result.verifiedAmountInPaise },
       String(action._id)
     );
     throw new AppError("Action no longer satisfies current merchant policy.", 409, "ACTION_REVALIDATION_FAILED");
   }
-  if (!reevaluation.approvalRequired) {
+  if (!result.approvalRequired) {
     action.approvalStatus = "NOT_REQUIRED";
     await action.save();
     throw new AppError("This action no longer requires explicit approval.", 409, "APPROVAL_NOT_REQUIRED");
   }
+  return result;
+}
 
-  // This conditional transition is the approval lock: concurrent requests can
-  // re-evaluate, but only one is allowed to enter execution.
+/** Explicit human approval. Approval never calls Razorpay. */
+export async function approveAction(options: { actionId: string }): Promise<ActionApprovalResult> {
+  if (!Types.ObjectId.isValid(options.actionId)) {
+    throw new AppError("Invalid action ID.", 400, "INVALID_ACTION_ID");
+  }
+  const action = await AgentActionModel.findById(options.actionId);
+  if (!action) throw new AppError("Agent action was not found.", 404, "ACTION_NOT_FOUND");
+  if (action.action !== "CREATE_PAYMENT" || action.policyResult?.decision !== "ALLOW") {
+    throw new AppError("Only policy-allowed payment actions can be approved.", 409, "ACTION_NOT_ALLOWED");
+  }
+  if (action.approvalStatus !== "PENDING" || action.executionStatus !== "NOT_STARTED") {
+    throw new AppError("This action has already been approved or processed.", 409, "ACTION_ALREADY_PROCESSED");
+  }
+
+  const reevaluation = await revalidateAction(action);
   const claimedAction = await AgentActionModel.findOneAndUpdate(
     { _id: action._id, approvalStatus: "PENDING", executionStatus: "NOT_STARTED" },
     {
       $set: {
         approvalStatus: "APPROVED",
-        executionStatus: "IN_PROGRESS",
+        executionStatus: "NOT_STARTED",
         policyResult: { decision: reevaluation.decision, checks: reevaluation.checks },
         verifiedAmountInPaise: reevaluation.verifiedAmountInPaise,
       },
@@ -290,8 +363,58 @@ export async function approveActionAndCreatePayment(options: {
   if (!claimedAction) {
     throw new AppError("This action is already being processed.", 409, "ACTION_ALREADY_PROCESSED");
   }
+  await recordAudit("ACTION_APPROVED", { approvalState: "APPROVED", executionState: "NOT_STARTED" }, String(claimedAction._id));
+  return {
+    success: true,
+    actionId: String(claimedAction._id),
+    approvalStatus: "APPROVED",
+    executionStatus: "NOT_STARTED",
+  };
+}
 
-  await recordAudit("ACTION_APPROVED", { approvalState: "APPROVED" }, String(claimedAction._id));
+/** Executes an explicitly approved action. This is the only path that calls Razorpay. */
+export async function createPaymentForApprovedAction(options: {
+  actionId: string;
+  credentials?: RazorpayCredentials;
+}): Promise<ApprovalResult> {
+  if (!Types.ObjectId.isValid(options.actionId)) {
+    throw new AppError("Invalid action ID.", 400, "INVALID_ACTION_ID");
+  }
+  const action = await AgentActionModel.findById(options.actionId);
+  if (!action) throw new AppError("Agent action was not found.", 404, "ACTION_NOT_FOUND");
+  if (action.action !== "CREATE_PAYMENT" || action.policyResult?.decision !== "ALLOW") {
+    throw new AppError("Only policy-allowed payment actions can create a payment.", 409, "ACTION_NOT_ALLOWED");
+  }
+  if (!action.approvalRequired) throw new AppError("This action does not require explicit approval.", 409, "APPROVAL_NOT_REQUIRED");
+  if (action.approvalStatus !== "APPROVED") {
+    throw new AppError("Action must be explicitly approved before payment creation.", 409, "APPROVAL_REQUIRED");
+  }
+  if (action.executionStatus === "UNKNOWN") {
+    const unknownOrder = await OrderModel.findOne({ referenceId: action.referenceId });
+    if (!unknownOrder) throw new AppError("Unknown payment state has no associated order.", 409, "RECOVERY_ORDER_NOT_FOUND");
+    return reconcilePayment({
+      orderId: String(unknownOrder._id),
+      ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
+    }).then((result) => ({
+      success: true as const,
+      actionId: String(action._id),
+      orderId: result.orderId,
+      paymentLinkId: result.paymentLinkId ?? "",
+      paymentLink: result.paymentLink ?? "",
+      status: result.status,
+    }));
+  }
+  if (action.executionStatus !== "NOT_STARTED") {
+    throw new AppError("This action has already been approved or processed.", 409, "ACTION_ALREADY_PROCESSED");
+  }
+
+  const reevaluation = await revalidateAction(action);
+  const claimedAction = await AgentActionModel.findOneAndUpdate(
+    { _id: action._id, approvalStatus: "APPROVED", executionStatus: "NOT_STARTED" },
+    { $set: { executionStatus: "IN_PROGRESS", policyResult: { decision: reevaluation.decision, checks: reevaluation.checks }, verifiedAmountInPaise: reevaluation.verifiedAmountInPaise } },
+    { new: true }
+  );
+  if (!claimedAction) throw new AppError("This action is already being processed.", 409, "ACTION_ALREADY_PROCESSED");
 
   let order: HydratedDocument<Order> | undefined;
   try {
@@ -299,80 +422,50 @@ export async function approveActionAndCreatePayment(options: {
       { referenceId: claimedAction.referenceId, items: claimedAction.proposal.items },
       reevaluation.verifiedAmountInPaise
     );
-
-    // A unique referenceId is the final duplicate-execution backstop. Reuse
-    // a previously created link; never issue another Razorpay request.
     if (order.razorpayPaymentLinkId && order.razorpayPaymentLinkUrl) {
       claimedAction.executionStatus = "SUCCEEDED";
       await claimedAction.save();
-      return {
-        success: true,
-        actionId: String(claimedAction._id),
-        orderId: String(order._id),
-        paymentLinkId: order.razorpayPaymentLinkId,
-        paymentLink: order.razorpayPaymentLinkUrl,
-        status: order.status,
-      };
+      return { success: true, actionId: String(claimedAction._id), orderId: String(order._id), paymentLinkId: order.razorpayPaymentLinkId, paymentLink: order.razorpayPaymentLinkUrl, status: order.status };
     }
 
-    await recordAudit("PAYMENT_LINK_CREATION_STARTED", {
-      verifiedAmountInPaise: reevaluation.verifiedAmountInPaise,
-      executionState: "IN_PROGRESS",
-    }, String(claimedAction._id));
-
+    await recordAudit("PAYMENT_LINK_CREATION_STARTED", { verifiedAmountInPaise: reevaluation.verifiedAmountInPaise, executionState: "IN_PROGRESS" }, String(claimedAction._id));
     const paymentLink = await createRazorpayPaymentLink({
       amountInPaise: reevaluation.verifiedAmountInPaise,
       referenceId: claimedAction.referenceId,
       description: `AgentShield order ${claimedAction.referenceId}`,
       ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
     });
-
     order.razorpayPaymentLinkId = paymentLink.id;
     order.razorpayPaymentLinkUrl = paymentLink.short_url;
     order.status = "AWAITING_PAYMENT";
     await order.save();
     claimedAction.executionStatus = "SUCCEEDED";
     await claimedAction.save();
-    await recordAudit("PAYMENT_LINK_CREATED", {
-      razorpayIdentifier: paymentLink.id,
-      executionState: "SUCCEEDED",
-    }, String(claimedAction._id));
-
-    return {
-      success: true,
-      actionId: String(claimedAction._id),
-      orderId: String(order._id),
-      paymentLinkId: paymentLink.id,
-      paymentLink: paymentLink.short_url,
-      status: order.status,
-    };
+    await recordAudit("PAYMENT_LINK_CREATED", { razorpayIdentifier: paymentLink.id, executionState: "SUCCEEDED" }, String(claimedAction._id));
+    return { success: true, actionId: String(claimedAction._id), orderId: String(order._id), paymentLinkId: paymentLink.id, paymentLink: paymentLink.short_url, status: order.status };
   } catch (error) {
     if (error instanceof AppError && error.code === "RAZORPAY_ERROR") {
-      if (order) {
-        order.status = "FAILED";
-        await order.save();
-      }
+      if (order) { order.status = "FAILED"; await order.save(); }
       claimedAction.executionStatus = "FAILED";
       await claimedAction.save();
-      await recordAudit("PAYMENT_EXECUTION_FAILED", {
-        executionState: "FAILED",
-        errorCategory: error.code,
-      }, String(claimedAction._id));
+      await recordAudit("PAYMENT_EXECUTION_FAILED", { executionState: "FAILED", errorCategory: error.code }, String(claimedAction._id));
       throw error;
     }
-
-    if (order) {
-      order.status = "UNKNOWN";
-      await order.save();
-    }
+    if (order) { order.status = "UNKNOWN"; await order.save(); }
     claimedAction.executionStatus = "UNKNOWN";
     await claimedAction.save();
-    await recordAudit("PAYMENT_EXECUTION_UNKNOWN", {
-      executionState: "UNKNOWN",
-      errorCategory: error instanceof Error ? error.message : "PAYMENT_EXECUTION_UNKNOWN",
-    }, String(claimedAction._id));
+    await recordAudit("PAYMENT_EXECUTION_UNKNOWN", { executionState: "UNKNOWN", errorCategory: error instanceof Error ? error.message : "PAYMENT_EXECUTION_UNKNOWN" }, String(claimedAction._id));
     throw error;
   }
+}
+
+/** Backward-compatible service composition used by the existing unit tests. */
+export async function approveActionAndCreatePayment(options: {
+  actionId: string;
+  credentials?: RazorpayCredentials;
+}): Promise<ApprovalResult> {
+  await approveAction({ actionId: options.actionId });
+  return createPaymentForApprovedAction(options);
 }
 
 export interface RazorpayPaymentLinkDetail {
@@ -489,6 +582,46 @@ async function lookupPaymentLinkByReference(referenceId: string, credentials: Ra
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function getPaymentStatusByOrderId(options: { orderId: string; credentials?: RazorpayCredentials }): Promise<{
+  orderId: string;
+  localStatus: OrderStatus;
+  paymentLinkId?: string;
+  paymentLink?: string;
+  razorpayStatus?: string;
+}> {
+  if (!Types.ObjectId.isValid(options.orderId)) throw new AppError("Invalid order ID.", 400, "INVALID_ORDER_ID");
+  const order = await OrderModel.findById(options.orderId);
+  if (!order) throw new AppError("Order was not found.", 404, "ORDER_NOT_FOUND");
+
+  let razorpayStatus: string | undefined;
+  if (order.razorpayPaymentLinkId || order.referenceId) {
+    const credentials = options.credentials ?? getRazorpayCredentials();
+    const remote = await lookupRazorpayPaymentLink({
+      ...(order.razorpayPaymentLinkId ? { paymentLinkId: order.razorpayPaymentLinkId } : {}),
+      referenceId: order.referenceId,
+      credentials,
+    });
+    if (remote) {
+      razorpayStatus = remote.status;
+      if ((remote.status === "paid" || remote.status === "captured") && order.status === "AWAITING_PAYMENT") {
+        order.status = "PAID";
+        await order.save();
+      } else if ((remote.status === "expired" || remote.status === "failed") && order.status === "AWAITING_PAYMENT") {
+        order.status = "FAILED";
+        await order.save();
+      }
+    }
+  }
+
+  return {
+    orderId: String(order._id),
+    localStatus: order.status,
+    ...(order.razorpayPaymentLinkId ? { paymentLinkId: order.razorpayPaymentLinkId } : {}),
+    ...(order.razorpayPaymentLinkUrl ? { paymentLink: order.razorpayPaymentLinkUrl } : {}),
+    ...(razorpayStatus ? { razorpayStatus } : {}),
+  };
 }
 
 export async function reconcilePayment(options: {

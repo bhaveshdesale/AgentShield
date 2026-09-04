@@ -19,7 +19,7 @@ export const logger = {
     console.warn(`[${timestamp()}] WARN  ${message}`);
   },
 
-  error(message: string, context?: Record<string, string | number | boolean>): void {
+  error(message: string, context?: Record<string, string | number | boolean | undefined>): void {
     if (context) {
       console.error(`[${timestamp()}] ERROR ${message}`, context);
       return;

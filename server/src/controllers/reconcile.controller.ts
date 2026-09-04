@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import mongoose from "mongoose";
-import { reconcilePayment } from "../services/payment.service";
+import { createPaymentForApprovedAction, getPaymentStatusByOrderId, reconcilePayment } from "../services/payment.service";
 import { AppError } from "../utils/AppError";
 
 export async function reconcilePaymentController(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -19,4 +19,19 @@ export async function reconcilePaymentController(req: Request, res: Response, ne
     }
     next(error);
   }
+}
+
+
+export async function createPayment(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const actionId = typeof req.body?.actionId === "string" ? req.body.actionId.trim() : "";
+    if (!actionId) throw new AppError("actionId is required.", 400, "INVALID_ACTION_ID");
+    res.status(200).json(await createPaymentForApprovedAction({ actionId }));
+  } catch (error) { next(error); }
+}
+
+export async function getPaymentStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    res.status(200).json(await getPaymentStatusByOrderId({ orderId: req.params.id }));
+  } catch (error) { next(error); }
 }
