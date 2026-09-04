@@ -1,0 +1,15 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import StatusBadge from "./StatusBadge";
+export default function ActionCard({ proposal, policyResult, actionId, onApprove, isApproving }) {
+    const proposedAmount = (proposal.proposedAmountInPaise / 100).toLocaleString("en-IN", {
+        style: "currency",
+        currency: "INR",
+    });
+    const verifiedAmount = policyResult
+        ? (policyResult.verifiedAmountInPaise / 100).toLocaleString("en-IN", { style: "currency", currency: "INR" })
+        : "—";
+    const amountsMatch = policyResult
+        ? proposal.proposedAmountInPaise === policyResult.verifiedAmountInPaise
+        : false;
+    return (_jsxs("div", { className: "mt-3 max-w-2xl rounded-lg border border-neutral-200 bg-white p-4 shadow-sm", children: [_jsxs("div", { className: "flex items-start justify-between", children: [_jsxs("div", { children: [_jsx("span", { className: "text-xs font-medium text-neutral-400", children: "Agent proposed action" }), _jsx("div", { className: "mt-1 text-lg font-semibold text-neutral-900", children: proposal.action.replace("_", " ") })] }), policyResult ? _jsx(StatusBadge, { status: "CREATED" }) : _jsx(StatusBadge, { status: "NOT_STARTED" })] }), _jsxs("div", { className: "mt-3 space-y-1 text-sm", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "text-neutral-500", children: "Reference" }), _jsx("span", { className: "font-mono text-neutral-900", children: proposal.referenceId })] }), _jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "text-neutral-500", children: "Items" }), _jsxs("span", { className: "text-neutral-900", children: [proposal.items.length, " item(s)"] })] }), _jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "text-neutral-500", children: "AI Proposed Amount" }), _jsx("span", { className: "font-medium text-neutral-900", children: proposedAmount })] }), _jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "text-neutral-500", children: "Server Verified Amount" }), _jsxs("span", { className: `font-medium ${amountsMatch ? "text-success-700" : "text-neutral-900"}`, children: [verifiedAmount, " ", amountsMatch && "✅"] })] }), policyResult && (_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "text-neutral-500", children: "Policy" }), _jsxs("span", { className: "font-medium text-neutral-900", children: [policyResult.decision, " \u2705"] })] })), proposal.requiresApproval && (_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "text-neutral-500", children: "Approval" }), _jsx("span", { className: "font-medium text-warning-700", children: "REQUIRED \u26A0" })] }))] }), onApprove && (_jsx("button", { onClick: onApprove, disabled: isApproving, className: "mt-4 w-full rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:opacity-50", children: isApproving ? "Processing..." : "Review & Approve" }))] }));
+}
