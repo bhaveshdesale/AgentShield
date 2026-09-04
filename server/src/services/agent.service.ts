@@ -327,8 +327,7 @@ export function parseAgentOutput(raw: string, catalog: CatalogProduct[]): AgentL
 // The API key never leaves the server.
 // ---------------------------------------------------------------------------
 
-const LLM_TIMEOUT_MS = 20000;
-
+const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 30000);
 function getLlmConfig(): { apiKey: string; baseUrl: string; model: string } | undefined {
   const apiKey = process.env.LLM_API_KEY;
   if (apiKey === undefined || apiKey.trim() === "") {
