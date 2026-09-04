@@ -1,108 +1,50 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useApi } from "../hooks/useApi";
-import type { Order } from "../types";
-import { apiGetOrders, apiReconcilePayment } from "../services/api";
-import MetricCard from "../components/MetricCard";
-import LoadingState from "../components/LoadingState";
-import ErrorState from "../components/ErrorState";
-import StatusBadge from "../components/StatusBadge";
-import { useToast } from "../hooks/useToast";
+import { apiPaymentStatus } from "../services/api";
+import type { PaymentStatus } from "../types";
+import Icon from "../components/Icon";
+
+const money = (p?: number) => p == null ? "—" : `₹${(p / 100).toLocaleString("en-IN")}`;
 
 export default function Payments() {
+  const [orderId, setOrderId] = useState("");
+  const [payment, setPayment] = useState<PaymentStatus | null>(null);
+  const [error, setError] = useState("");
   const navigate = useNavigate();
-  const { showToast } = useToast();
-  const { data: orders, error: ordersError, loading: ordersLoading, refetch } = useApi<Order[]>(
-    { fn: apiGetOrders, deps: [] }
-  );
 
-  const handleReconcile = async (orderId: string) => {
+  async function lookup() {
+    if (!orderId.trim()) return;
+    setError("");
     try {
-      const result = await apiReconcilePayment(orderId);
-      showToast(`Payment reconciled: ${result.status}`, "success");
-      refetch();
+      const result = await apiPaymentStatus(orderId.trim());
+      setPayment(result);
     } catch (e) {
-      const error = e as Error;
-      showToast(error.message || "Reconciliation failed", "error");
+      setPayment(null);
+      setError(e instanceof Error ? e.message : "Payment could not be found.");
     }
-  };
-
-  if (ordersLoading) {
-    return <LoadingState />;
-  }
-
-  if (ordersError) {
-    return <ErrorState error={ordersError} onRetry={refetch} />;
   }
 
   return (
-    <div className="p-6">
-      <h1 className="text-2xl font-semibold text-neutral-900">Payments</h1>
-      <p className="mt-1 text-neutral-500">Monitor and manage payment execution and recovery.</p>
-
-      <div className="mt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
-        <MetricCard title="Total Orders" value={orders?.length || 0} variant="default" />
-        <MetricCard
-          title="Awaiting Payment"
-          value={orders?.filter((o) => o.status === "AWAITING_PAYMENT").length || 0}
-          variant="warning"
-        />
-        <MetricCard
-          title="Paid"
-          value={orders?.filter((o) => o.status === "PAID").length || 0}
-          variant="success"
-        />
-        <MetricCard
-          title="Unknown"
-          value={orders?.filter((o) => o.status === "UNKNOWN").length || 0}
-          variant="neutral"
-        />
+    <section className="simple-page">
+      <div className="simple-head">
+        <div><p className="eyebrow">PAYMENTS</p><h1>Payment status</h1><p>Check the authoritative status of a Razorpay test payment.</p></div>
+        <span className="mode-pill large"><span className="mode-dot" /> Test mode</span>
       </div>
 
-      <div className="mt-8">
-        <h2 className="text-lg font-semibold text-neutral-900 mb-3">Payment Orders</h2>
-        {orders && orders.length > 0 ? (
-          <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-neutral-200 bg-neutral-50">
-                  <th className="px-4 py-2 text-left font-medium text-neutral-500">Reference</th>
-                  <th className="px-4 py-2 text-left font-medium text-neutral-500">Amount</th>
-                  <th className="px-4 py-2 text-left font-medium text-neutral-500">Status</th>
-                  <th className="px-4 py-2 text-left font-medium text-neutral-500">Updated</th>
-                  <th className="px-4 py-2 text-left font-medium text-neutral-500">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {orders.map((order) => (
-                  <tr key={order._id} className="border-b border-neutral-200 last:border-0 hover:bg-neutral-50">
-                    <td className="px-4 py-2 font-mono text-neutral-900">{order.referenceId}</td>
-                    <td className="px-4 py-2 text-neutral-900">₹{(order.amountInPaise / 100).toLocaleString("en-IN")}</td>
-                    <td className="px-4 py-2">
-                      <StatusBadge status={order.status} />
-                    </td>
-                    <td className="px-4 py-2 text-neutral-500">{new Date(order.updatedAt).toLocaleString()}</td>
-                    <td className="px-4 py-2">
-                      {order.status === "UNKNOWN" && (
-                        <button
-                          onClick={() => handleReconcile(order._id)}
-                          className="text-sm font-medium text-primary-600 hover:text-primary-700"
-                        >
-                          Reconcile
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="text-center py-8 text-neutral-400">
-            <p>No payment orders yet</p>
-          </div>
-        )}
+      <div className="lookup-card">
+        <div className="lookup-copy"><div className="lookup-icon"><Icon name="card" size={21} /></div><div><strong>Look up an order</strong><span>Use the order ID returned after AgentShield creates a payment link.</span></div></div>
+        <div className="lookup-form"><input value={orderId} onChange={(e) => setOrderId(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void lookup()} placeholder="Order ID" /><button onClick={() => void lookup()}><Icon name="search" size={17} /> Check</button></div>
       </div>
-    </div>
+
+      {error && <div className="inline-error page-error"><Icon name="x" size={15} /> {error}</div>}
+      {payment && (
+        <div className="payment-result-card">
+          <div className="payment-result-main"><span className="eyebrow">CURRENT STATE</span><div className={`payment-status ${payment.status.toLowerCase()}`}><span /> {payment.status.replaceAll("_", " ")}</div><strong>{money(payment.amountInPaise)}</strong></div>
+          <div className="payment-result-meta"><div><span>Order ID</span><code>{payment.orderId}</code></div><div><span>Payment link</span><code>{payment.paymentLinkId || "—"}</code></div>{payment.paymentLink && <a href={payment.paymentLink} target="_blank" rel="noreferrer">Open checkout <Icon name="external" size={14} /></a>}<button onClick={() => navigate(`/payments/${payment.orderId}`)}>View details <Icon name="arrow" size={14} /></button></div>
+        </div>
+      )}
+
+      {!payment && !error && <div className="page-empty"><div><Icon name="card" size={22} /></div><strong>No payment selected</strong><span>Create a payment from the Agent page, then paste its order ID here.</span></div>}
+    </section>
   );
 }

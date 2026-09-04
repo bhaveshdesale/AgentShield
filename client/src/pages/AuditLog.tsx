@@ -1,59 +1,31 @@
-import { useApi } from "../hooks/useApi";
-import { apiGetAuditLogs } from "../services/api";
-import LoadingState from "../components/LoadingState";
-import ErrorState from "../components/ErrorState";
-import StatusBadge from "../components/StatusBadge";
+import { useEffect, useState } from "react";
+import type { AuditLogEntry } from "../types";
+import { apiAudit } from "../services/api";
+import Icon from "../components/Icon";
 
 export default function AuditLog() {
-  const { data: logs, error, loading, refetch } = useApi<any[]>(
-    { fn: () => apiGetAuditLogs(50), deps: [] }
-  );
+  const [logs, setLogs] = useState<AuditLogEntry[]>([]);
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(true);
 
-  if (loading) {
-    return <LoadingState />;
-  }
+  async function load() { setLoading(true); try { setLogs(await apiAudit(100)); } finally { setLoading(false); } }
+  useEffect(() => { void load(); }, []);
 
-  if (error) {
-    return <ErrorState error={error} onRetry={refetch} />;
-  }
+  const filtered = logs.filter((log) => `${log.event} ${log.actionId ?? ""} ${JSON.stringify(log.details)}`.toLowerCase().includes(query.toLowerCase()));
 
   return (
-    <div className="p-6">
-      <h1 className="text-2xl font-semibold text-neutral-900">Audit Log</h1>
-      <p className="mt-1 text-neutral-500">View system events and actions.</p>
-
-      <div className="mt-6 overflow-x-auto rounded-lg border border-neutral-200 bg-white">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-neutral-200 bg-neutral-50">
-              <th className="px-4 py-2 text-left font-medium text-neutral-500">Timestamp</th>
-              <th className="px-4 py-2 text-left font-medium text-neutral-500">Event</th>
-              <th className="px-4 py-2 text-left font-medium text-neutral-500">Action ID</th>
-              <th className="px-4 py-2 text-left font-medium text-neutral-500">Details</th>
-            </tr>
-          </thead>
-          <tbody>
-            {logs && logs.length > 0 ? (
-              logs.map((log: { _id: string; timestamp: string; event: string; actionId?: string; details: Record<string, unknown> }) => (
-                <tr key={log._id} className="border-b border-neutral-200 last:border-0 hover:bg-neutral-50">
-                  <td className="px-4 py-2 text-neutral-900">{new Date(log.timestamp).toLocaleString()}</td>
-                  <td className="px-4 py-2">
-                    <StatusBadge status={log.event} />
-                  </td>
-                  <td className="px-4 py-2 font-mono text-neutral-900">{log.actionId || "N/A"}</td>
-                  <td className="px-4 py-2 text-neutral-500">{JSON.stringify(log.details, null, 2)}</td>
-                </tr>
-              ))
-            ) : (
-              <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-neutral-400">
-                  No audit logs yet
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+    <section className="simple-page">
+      <div className="simple-head"><div><p className="eyebrow">AUDIT TRAIL</p><h1>What happened</h1><p>Policy and payment transitions recorded by the server.</p></div><button className="refresh-button" onClick={() => void load()}><Icon name="refresh" size={16} /> Refresh</button></div>
+      <div className="audit-toolbar"><div className="search-field"><Icon name="search" size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search events or action IDs" /></div><span>{filtered.length} events</span></div>
+      <div className="audit-surface">
+        {loading ? <div className="page-loading">Loading audit trail…</div> : filtered.length ? filtered.map((log) => (
+          <div className="audit-entry" key={log._id}>
+            <div className={`audit-marker ${log.event.includes("BLOCK") ? "danger" : log.event.includes("PAYMENT") ? "payment" : "normal"}`} />
+            <div className="audit-main"><strong>{log.event.replaceAll("_", " ")}</strong><span>{log.actionId ? `Action ${log.actionId.slice(-10)}` : "System event"}</span></div>
+            <time>{new Date(log.timestamp).toLocaleString("en-IN")}</time>
+          </div>
+        )) : <div className="page-empty"><div><Icon name="activity" size={22} /></div><strong>No audit events</strong><span>Important decisions will appear here as the agent is used.</span></div>}
       </div>
-    </div>
+    </section>
   );
 }

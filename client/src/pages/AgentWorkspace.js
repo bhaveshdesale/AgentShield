@@ -1,118 +1,96 @@
-import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { useApi } from "../hooks/useApi";
-import { apiAgentChat, apiValidateAction, apiApproveAction } from "../services/api";
-import AgentMessage from "../components/AgentMessage";
-import ActionCard from "../components/ActionCard";
-import ApprovalPanel from "../components/ApprovalPanel";
-import LoadingState from "../components/LoadingState";
-import ErrorState from "../components/ErrorState";
-import StatusBadge from "../components/StatusBadge";
-import MetricCard from "../components/MetricCard";
-import { useToast } from "../hooks/useToast";
+import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
+import { useMemo, useState } from "react";
+import { apiAgentChat, apiApproveAction, apiCreatePayment, apiProducts, apiValidateAction } from "../services/api";
+import Icon from "../components/Icon";
+const money = (paise) => `₹${(paise / 100).toLocaleString("en-IN")}`;
 export default function AgentWorkspace() {
-    const navigate = useNavigate();
-    const { showToast } = useToast();
-    const [agentMessage, setAgentMessage] = useState("");
-    const [conversationId, setConversationId] = useState();
+    const [input, setInput] = useState("");
+    const [messages, setMessages] = useState([]);
+    const [result, setResult] = useState(null);
     const [action, setAction] = useState(null);
-    const [isApproving, setIsApproving] = useState(false);
-    const { data: agentResult, error: agentError, loading: agentLoading } = useApi({
-        fn: () => apiAgentChat(agentMessage, conversationId),
-        deps: [agentMessage, conversationId],
-    });
-    useEffect(() => {
-        if (agentResult) {
-            setConversationId(agentResult.conversationId);
-            setAction(null);
-            if (agentResult.proposal && agentResult.policyResult) {
-                void (async () => {
-                    try {
-                        const validateResponse = await apiValidateAction({
-                            action: agentResult.proposal?.action || "",
-                            items: agentResult.proposal?.items.map((item) => ({
-                                productId: item.productId,
-                                quantity: item.quantity,
-                            })) || [],
-                            proposedAmountInPaise: agentResult.proposal?.proposedAmountInPaise || 0,
-                            reason: agentResult.proposal?.reason || "",
-                            requiresApproval: agentResult.proposal?.requiresApproval || true,
-                            referenceId: agentResult.proposal?.referenceId || "",
-                            conversationId: conversationId,
-                            discountPercent: agentResult.proposal?.discountPercent,
-                        });
-                        setAction({
-                            _id: validateResponse.actionId,
-                            conversationId: agentResult.conversationId,
-                            referenceId: agentResult.proposal.referenceId,
-                            action: agentResult.proposal.action,
-                            proposal: agentResult.proposal,
-                            reason: agentResult.proposal.reason,
-                            policyResult: {
-                                decision: agentResult.policyResult?.decision || "ALLOW",
-                                checks: agentResult.policyResult?.checks || [],
-                                reason: agentResult.policyResult?.reason || "",
-                                verifiedAmountInPaise: agentResult.policyResult?.verifiedAmountInPaise || 0,
-                                approvalRequired: agentResult.policyResult?.approvalRequired || false,
-                            },
-                            verifiedAmountInPaise: agentResult.policyResult?.verifiedAmountInPaise || 0,
-                            approvalRequired: agentResult.policyResult?.approvalRequired || false,
-                            discountPercent: agentResult.proposal?.discountPercent,
-                            approvalStatus: "PENDING",
-                            executionStatus: "NOT_STARTED",
-                            createdAt: new Date().toISOString(),
-                            updatedAt: new Date().toISOString(),
-                        });
-                    }
-                    catch (e) {
-                        showToast(e instanceof Error ? e.message : "Failed to validate proposal", "error");
-                    }
-                })();
-            }
-        }
-    }, [agentResult]);
-    const handleApprove = async () => {
-        if (!action)
+    const [payment, setPayment] = useState(null);
+    const [products, setProducts] = useState([]);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState("");
+    const started = messages.length > 0;
+    const suggestions = useMemo(() => [
+        "Find wireless headphones under ₹5,000",
+        "Buy the artisan coffee kit",
+        "Find a laptop under ₹50,000",
+    ], []);
+    async function sendMessage(value = input) {
+        const message = value.trim();
+        if (!message || busy)
             return;
-        setIsApproving(true);
+        setInput("");
+        setMessages((current) => [...current, { role: "user", text: message }]);
+        setBusy(true);
+        setError("");
         try {
-            const result = await apiApproveAction(action._id);
-            setAction({
-                ...action,
-                approvalStatus: "APPROVED",
-                executionStatus: "IN_PROGRESS",
-            });
-            showToast("Payment link created successfully", "success");
-            navigate(`/payments/${result.orderId}`);
+            const response = await apiAgentChat(message, result?.conversationId);
+            setResult(response);
+            setMessages((current) => [...current, { role: "agent", text: response.message }]);
+            const catalog = await apiProducts();
+            setProducts(catalog);
+            if (response.proposal && response.policyResult) {
+                const validated = await apiValidateAction({
+                    ...response.proposal,
+                    conversationId: response.conversationId,
+                });
+                setAction({
+                    _id: validated.actionId,
+                    conversationId: response.conversationId,
+                    referenceId: response.proposal.referenceId,
+                    action: response.proposal.action,
+                    proposal: response.proposal,
+                    reason: response.proposal.reason,
+                    policyResult: validated,
+                    verifiedAmountInPaise: validated.verifiedAmountInPaise,
+                    approvalRequired: validated.approvalRequired,
+                    approvalStatus: validated.approvalRequired ? "PENDING" : "NOT_REQUIRED",
+                    executionStatus: validated.decision === "ALLOW" ? "NOT_STARTED" : "BLOCKED",
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                });
+                setPayment(null);
+            }
         }
         catch (e) {
-            const error = e;
-            if (error.statusCode === 409 && error.code === "DUPLICATE_REFERENCE") {
-                showToast("Action already processed. Redirecting to approvals...", "info");
-                navigate("/approvals");
-            }
-            else {
-                showToast(error.message || "Failed to create payment link", "error");
-            }
+            setError(e instanceof Error ? e.message : "The agent could not complete the request.");
         }
         finally {
-            setIsApproving(false);
+            setBusy(false);
         }
-    };
-    const handleReject = () => {
-        setAction({
-            ...action,
-            approvalStatus: "REJECTED",
-            executionStatus: "BLOCKED",
-        });
-        showToast("Action rejected", "info");
-    };
-    if (agentLoading) {
-        return _jsx(LoadingState, {});
     }
-    if (agentError) {
-        return _jsx(ErrorState, { error: agentError });
+    async function approve() {
+        if (!action || action.policyResult?.decision !== "ALLOW" || busy)
+            return;
+        setBusy(true);
+        setError("");
+        try {
+            await apiApproveAction(action._id);
+            const created = await apiCreatePayment(action._id);
+            setPayment(created);
+            setAction((current) => current ? { ...current, approvalStatus: "APPROVED", executionStatus: "IN_PROGRESS" } : current);
+        }
+        catch (e) {
+            setError(e instanceof Error ? e.message : "Approval failed.");
+        }
+        finally {
+            setBusy(false);
+        }
     }
-    return (_jsxs("div", { className: "p-6", children: [_jsx("h1", { className: "text-2xl font-semibold text-neutral-900", children: "Agent Workspace" }), _jsx("p", { className: "mt-1 text-neutral-500", children: "Communicate with the commerce agent and review proposals." }), _jsxs("div", { className: "mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6", children: [_jsxs("div", { className: "bg-white rounded-lg border border-neutral-200 p-4 shadow-sm", children: [_jsx("h2", { className: "text-lg font-semibold text-neutral-900 mb-3", children: "AI Conversation" }), agentResult ? (_jsxs("div", { className: "space-y-4", children: [_jsx(AgentMessage, { chat: agentResult }), agentResult.recommendations.map((rec) => (_jsxs("div", { className: "text-sm border-t border-neutral-100 pt-2", children: [_jsx("div", { className: "font-medium text-neutral-900", children: rec.name }), _jsxs("div", { className: "text-neutral-600", children: ["\u20B9", (rec.priceInPaise / 100).toLocaleString("en-IN")] }), _jsx("div", { className: "text-neutral-500 text-xs mt-1", children: rec.reason })] }, rec.productId)))] })) : (_jsx("div", { className: "text-neutral-400 text-sm", children: "Send a message to start the conversation." })), _jsxs("div", { className: "mt-4 flex gap-2", children: [_jsx("input", { type: "text", placeholder: "Type your request...", className: "flex-1 px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-primary-500", value: agentMessage, onChange: (e) => setAgentMessage(e.target.value), onKeyDown: (e) => e.key === "Enter" && agentMessage && !agentLoading && setAgentMessage("") }), _jsx("button", { onClick: () => agentMessage && !agentLoading && setAgentMessage(""), className: "px-4 py-2 bg-primary-600 text-white text-sm font-medium rounded-lg hover:bg-primary-700 disabled:opacity-50", disabled: !agentMessage || agentLoading, children: "Send" })] })] }), _jsxs("div", { className: "space-y-4", children: [_jsx(MetricCard, { title: "Agent Status", value: "ONLINE", icon: _jsx("span", { children: "\uD83D\uDFE2" }), variant: "success" }), _jsx(MetricCard, { title: "Actions Today", value: "12", subtitle: "3 approved, 2 blocked", variant: "default" }), _jsx(MetricCard, { title: "Recovery Queue", value: "2", subtitle: "Unknown states waiting", variant: "warning" }), _jsxs("div", { className: "bg-white rounded-lg border border-neutral-200 p-4 shadow-sm", children: [_jsx("h3", { className: "text-lg font-semibold text-neutral-900", children: "Current Action" }), action ? (_jsxs("div", { children: [_jsx(ActionCard, { proposal: action.proposal, policyResult: action.policyResult, actionId: action._id, onApprove: handleApprove, isApproving: isApproving }), _jsxs("div", { className: "mt-4 space-y-2 text-sm", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "text-neutral-500", children: "Execution" }), _jsx(StatusBadge, { status: action.executionStatus })] }), _jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "text-neutral-500", children: "Approval" }), _jsx(StatusBadge, { status: action.approvalStatus })] })] })] })) : (_jsx("div", { className: "text-neutral-400 text-sm py-4", children: "No action in progress. Send a message to start." }))] }), action && (action.approvalStatus === "PENDING" || action.approvalStatus === "NOT_REQUIRED") && (_jsx(ApprovalPanel, { actionId: action._id, verifiedAmountInPaise: action.verifiedAmountInPaise, isApproving: isApproving, onApprove: handleApprove, onReject: handleReject, approvalResult: undefined }))] })] })] }));
+    function onSubmit(event) {
+        event.preventDefault();
+        void sendMessage();
+    }
+    if (!started) {
+        return (_jsxs("section", { className: "agent-home", children: [_jsxs("div", { className: "agent-intro", children: [_jsxs("div", { className: "agent-avatar", "aria-hidden": "true", children: [_jsx("span", { className: "avatar-eye left" }), _jsx("span", { className: "avatar-eye right" }), _jsx("span", { className: "avatar-body" }), _jsx("span", { className: "avatar-shadow" })] }), _jsx("p", { className: "home-kicker", children: "SECURE COMMERCE AGENT" }), _jsxs("h1", { children: ["What can I help you ", _jsx("span", { children: "buy?" })] }), _jsx("p", { className: "home-subtitle", children: "Ask naturally. AgentShield verifies every proposed transaction before money can move." })] }), _jsxs("form", { className: "composer hero-composer", onSubmit: onSubmit, children: [_jsx("textarea", { value: input, onChange: (event) => setInput(event.target.value), onKeyDown: (event) => {
+                                if (event.key === "Enter" && !event.shiftKey) {
+                                    event.preventDefault();
+                                    void sendMessage();
+                                }
+                            }, placeholder: "Chat with your assistant...", rows: 2, autoFocus: true }), _jsxs("div", { className: "composer-bottom", children: [_jsxs("span", { className: "composer-hint", children: [_jsx(Icon, { name: "shield", size: 14 }), " Policy protected"] }), _jsx("button", { className: "send-button", disabled: !input.trim() || busy, "aria-label": "Send", children: _jsx(Icon, { name: "arrow", size: 18 }) })] })] }), _jsx("div", { className: "suggestions", children: suggestions.map((suggestion) => (_jsx("button", { onClick: () => void sendMessage(suggestion), children: suggestion }, suggestion))) }), _jsxs("div", { className: "trust-line", children: [_jsx("span", { className: "trust-check", children: "\u2713" }), " AI proposes \u00B7 AgentShield authorizes \u00B7 You approve \u00B7 Razorpay executes"] })] }));
+    }
+    return (_jsxs("section", { className: "agent-session", children: [_jsxs("div", { className: "session-header", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "PROTECTED SESSION" }), _jsx("h1", { children: "Commerce agent" })] }), _jsx("button", { className: "new-session", onClick: () => { setMessages([]); setResult(null); setAction(null); setPayment(null); setError(""); }, children: "New conversation" })] }), _jsxs("div", { className: "session-grid", children: [_jsxs("section", { className: "conversation-card", children: [_jsxs("div", { className: "conversation-scroll", children: [messages.map((message, index) => (_jsxs("div", { className: `chat-message ${message.role}`, children: [message.role === "agent" && _jsx("div", { className: "mini-agent", children: _jsx(Icon, { name: "shield", size: 14 }) }), _jsx("div", { className: "chat-bubble", children: message.text })] }, `${message.role}-${index}`))), busy && _jsxs("div", { className: "chat-message agent", children: [_jsx("div", { className: "mini-agent", children: _jsx(Icon, { name: "shield", size: 14 }) }), _jsxs("div", { className: "chat-bubble typing", children: [_jsx("i", {}), " ", _jsx("i", {}), " ", _jsx("i", {})] })] })] }), _jsxs("form", { className: "composer session-composer", onSubmit: onSubmit, children: [_jsx("textarea", { value: input, onChange: (event) => setInput(event.target.value), placeholder: "Tell the agent what you want to buy...", rows: 1 }), _jsx("button", { className: "send-button", disabled: !input.trim() || busy, "aria-label": "Send", children: _jsx(Icon, { name: "arrow", size: 17 }) })] }), result?.source === "fallback" && _jsx("p", { className: "fallback-note", children: "Using deterministic fallback agent. Authorization remains server-side." })] }), _jsxs("aside", { className: "security-card", children: [_jsxs("div", { className: "security-header", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "AGENTSHIELD" }), _jsx("h2", { children: "Authorization" })] }), _jsxs("span", { className: "secure-badge", children: [_jsx("span", {}), " protected"] })] }), error && _jsxs("div", { className: "inline-error", children: [_jsx(Icon, { name: "x", size: 15 }), " ", error] }), !action && _jsxs("div", { className: "security-empty", children: [_jsx("div", { className: "security-orb", children: _jsx(Icon, { name: "shield", size: 25 }) }), _jsx("strong", { children: "Waiting for a proposal" }), _jsx("span", { children: "The agent can recommend a product, but only this server-side policy layer can authorize payment." })] }), action && (_jsxs(_Fragment, { children: [_jsxs("div", { className: `decision-banner ${action.policyResult?.decision.toLowerCase()}`, children: [_jsx("span", { className: "decision-symbol", children: action.policyResult?.decision === "ALLOW" ? "✓" : action.policyResult?.decision === "BLOCK" ? "×" : "!" }), _jsxs("div", { children: [_jsx("strong", { children: action.policyResult?.decision === "ALLOW" ? "Allowed — approval required" : action.policyResult?.decision === "BLOCK" ? "Blocked by policy" : "Escalation required" }), _jsx("span", { children: action.policyResult?.reason })] })] }), _jsxs("div", { className: "proposal-card", children: [_jsx("p", { className: "eyebrow", children: "ACTION PROPOSAL" }), _jsx("h3", { children: action.action.replaceAll("_", " ") }), _jsxs("div", { className: "amount-line", children: [_jsx("span", { children: "Verified amount" }), _jsx("strong", { children: money(action.verifiedAmountInPaise) })] }), _jsxs("div", { className: "amount-line muted", children: [_jsx("span", { children: "Agent proposed" }), _jsx("span", { children: money(action.proposal.proposedAmountInPaise) })] }), _jsxs("div", { className: "reference-line", children: [_jsx("span", { children: "ref" }), _jsx("code", { children: action.referenceId })] })] }), _jsxs("div", { className: "policy-list", children: [_jsx("div", { className: "policy-title", children: "POLICY CHECKS" }), action.policyResult?.checks.map((check) => (_jsxs("div", { className: "policy-row", children: [_jsx("span", { className: `policy-icon ${check.passed ? "pass" : "fail"}`, children: check.passed ? "✓" : "×" }), _jsxs("div", { children: [_jsx("strong", { children: check.name }), _jsx("span", { children: check.message })] })] }, check.name)))] }), payment ? (_jsxs("div", { className: "payment-ready", children: [_jsxs("div", { children: [_jsx("span", { className: "eyebrow", children: "PAYMENT LINK READY" }), _jsx("strong", { children: money(action.verifiedAmountInPaise) })] }), _jsxs("a", { href: payment.paymentLink, target: "_blank", rel: "noreferrer", children: ["Open Razorpay checkout ", _jsx(Icon, { name: "external", size: 14 })] })] })) : action.policyResult?.decision === "ALLOW" ? (_jsxs("button", { className: "approve-button", disabled: busy, onClick: () => void approve(), children: [busy ? "Creating secure payment link…" : "Approve purchase", _jsx(Icon, { name: "arrow", size: 17 })] })) : null] }))] })] }), !!products.length && result?.recommendations?.length ? (_jsxs("div", { className: "recommendations", children: [_jsx("div", { className: "section-label", children: "RECOMMENDED FROM CATALOG" }), _jsx("div", { className: "recommendation-list", children: result.recommendations.map((recommendation) => (_jsxs("div", { className: "recommendation", children: [_jsx("div", { className: "recommendation-icon", children: _jsx(Icon, { name: "box", size: 18 }) }), _jsxs("div", { children: [_jsx("strong", { children: recommendation.name }), _jsxs("span", { children: [money(recommendation.priceInPaise), " \u00B7 ", recommendation.reason] })] })] }, recommendation.productId))) })] })) : null] }));
 }

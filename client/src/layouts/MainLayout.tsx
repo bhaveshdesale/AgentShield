@@ -1,37 +1,69 @@
-import { ReactNode, useState } from "react";
-import { Outlet } from "react-router-dom";
-import Sidebar from "../components/Sidebar";
-import Toast from "../components/Toast";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { useEffect, useState } from "react";
+import Icon from "../components/Icon";
+import { apiHealth } from "../services/api";
 
-interface ToastMsg {
-  id: number;
-  message: string;
-  type: "success" | "error" | "info" | "warning";
-}
+const nav = [
+  { label: "Agent", to: "/", icon: "bot" },
+  { label: "Payments", to: "/payments", icon: "card" },
+  { label: "Safety", to: "/simulator", icon: "shield" },
+  { label: "Audit", to: "/audit", icon: "activity" },
+];
 
 export default function MainLayout() {
-  const [toasts, setToasts] = useState<ToastMsg[]>([]);
+  const location = useLocation();
+  const [online, setOnline] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  useEffect(() => {
+    const check = () => apiHealth().then(() => setOnline(true)).catch(() => setOnline(false));
+    check();
+    const timer = window.setInterval(check, 15000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const isAgent = location.pathname === "/" || location.pathname === "/agent";
 
   return (
-    <div className="flex h-screen bg-neutral-50">
-      <Sidebar />
-      <div className="flex-1 overflow-hidden">
-        <div className="h-full overflow-y-auto">
-          <div className="p-6">
-            <Outlet />
-          </div>
+    <div className={`app ${isAgent ? "app-agent" : ""}`}>
+      <header className="topbar">
+        <NavLink to="/" className="brand" onClick={() => setMobileOpen(false)}>
+          <span className="brand-mark"><Icon name="shield" size={17} /></span>
+          <span className="brand-copy">
+            <strong>AgentShield</strong>
+            <small>trust layer</small>
+          </span>
+        </NavLink>
+
+        <nav className={`top-nav ${mobileOpen ? "open" : ""}`}>
+          {nav.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === "/"}
+              onClick={() => setMobileOpen(false)}
+              className={({ isActive }) => isActive ? "top-nav-link active" : "top-nav-link"}
+            >
+              <Icon name={item.icon} size={15} />
+              {item.label}
+            </NavLink>
+          ))}
+        </nav>
+
+        <div className="topbar-right">
+          <span className="mode-pill"><span className="mode-dot" /> Razorpay Test Mode</span>
+          <span className={`connection-pill ${online ? "online" : "offline"}`}>
+            <span /> {online ? "Connected" : "Offline"}
+          </span>
+          <button className="mobile-menu" onClick={() => setMobileOpen((v) => !v)} aria-label="Toggle navigation">
+            <Icon name="menu" size={19} />
+          </button>
         </div>
-      </div>
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
-        {toasts.map((toast) => (
-          <Toast
-            key={toast.id}
-            message={toast.message}
-            type={toast.type}
-            onClose={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
-          />
-        ))}
-      </div>
+      </header>
+
+      <main className="main-content">
+        <Outlet />
+      </main>
     </div>
   );
 }

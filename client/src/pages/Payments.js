@@ -1,32 +1,26 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useApi } from "../hooks/useApi";
-import { apiGetOrders, apiReconcilePayment } from "../services/api";
-import MetricCard from "../components/MetricCard";
-import LoadingState from "../components/LoadingState";
-import ErrorState from "../components/ErrorState";
-import StatusBadge from "../components/StatusBadge";
-import { useToast } from "../hooks/useToast";
+import { apiPaymentStatus } from "../services/api";
+import Icon from "../components/Icon";
+const money = (p) => p == null ? "—" : `₹${(p / 100).toLocaleString("en-IN")}`;
 export default function Payments() {
+    const [orderId, setOrderId] = useState("");
+    const [payment, setPayment] = useState(null);
+    const [error, setError] = useState("");
     const navigate = useNavigate();
-    const { showToast } = useToast();
-    const { data: orders, error: ordersError, loading: ordersLoading, refetch } = useApi({ fn: apiGetOrders, deps: [] });
-    const handleReconcile = async (orderId) => {
+    async function lookup() {
+        if (!orderId.trim())
+            return;
+        setError("");
         try {
-            const result = await apiReconcilePayment(orderId);
-            showToast(`Payment reconciled: ${result.status}`, "success");
-            refetch();
+            const result = await apiPaymentStatus(orderId.trim());
+            setPayment(result);
         }
         catch (e) {
-            const error = e;
-            showToast(error.message || "Reconciliation failed", "error");
+            setPayment(null);
+            setError(e instanceof Error ? e.message : "Payment could not be found.");
         }
-    };
-    if (ordersLoading) {
-        return _jsx(LoadingState, {});
     }
-    if (ordersError) {
-        return _jsx(ErrorState, { error: ordersError, onRetry: refetch });
-    }
-    return (_jsxs("div", { className: "p-6", children: [_jsx("h1", { className: "text-2xl font-semibold text-neutral-900", children: "Payments" }), _jsx("p", { className: "mt-1 text-neutral-500", children: "Monitor and manage payment execution and recovery." }), _jsxs("div", { className: "mt-6 grid grid-cols-1 md:grid-cols-4 gap-4", children: [_jsx(MetricCard, { title: "Total Orders", value: orders?.length || 0, variant: "default" }), _jsx(MetricCard, { title: "Awaiting Payment", value: orders?.filter((o) => o.status === "AWAITING_PAYMENT").length || 0, variant: "warning" }), _jsx(MetricCard, { title: "Paid", value: orders?.filter((o) => o.status === "PAID").length || 0, variant: "success" }), _jsx(MetricCard, { title: "Unknown", value: orders?.filter((o) => o.status === "UNKNOWN").length || 0, variant: "neutral" })] }), _jsxs("div", { className: "mt-8", children: [_jsx("h2", { className: "text-lg font-semibold text-neutral-900 mb-3", children: "Payment Orders" }), orders && orders.length > 0 ? (_jsx("div", { className: "overflow-x-auto rounded-lg border border-neutral-200 bg-white", children: _jsxs("table", { className: "w-full text-sm", children: [_jsx("thead", { children: _jsxs("tr", { className: "border-b border-neutral-200 bg-neutral-50", children: [_jsx("th", { className: "px-4 py-2 text-left font-medium text-neutral-500", children: "Reference" }), _jsx("th", { className: "px-4 py-2 text-left font-medium text-neutral-500", children: "Amount" }), _jsx("th", { className: "px-4 py-2 text-left font-medium text-neutral-500", children: "Status" }), _jsx("th", { className: "px-4 py-2 text-left font-medium text-neutral-500", children: "Updated" }), _jsx("th", { className: "px-4 py-2 text-left font-medium text-neutral-500", children: "Actions" })] }) }), _jsx("tbody", { children: orders.map((order) => (_jsxs("tr", { className: "border-b border-neutral-200 last:border-0 hover:bg-neutral-50", children: [_jsx("td", { className: "px-4 py-2 font-mono text-neutral-900", children: order.referenceId }), _jsxs("td", { className: "px-4 py-2 text-neutral-900", children: ["\u20B9", (order.amountInPaise / 100).toLocaleString("en-IN")] }), _jsx("td", { className: "px-4 py-2", children: _jsx(StatusBadge, { status: order.status }) }), _jsx("td", { className: "px-4 py-2 text-neutral-500", children: new Date(order.updatedAt).toLocaleString() }), _jsx("td", { className: "px-4 py-2", children: order.status === "UNKNOWN" && (_jsx("button", { onClick: () => handleReconcile(order._id), className: "text-sm font-medium text-primary-600 hover:text-primary-700", children: "Reconcile" })) })] }, order._id))) })] }) })) : (_jsx("div", { className: "text-center py-8 text-neutral-400", children: _jsx("p", { children: "No payment orders yet" }) }))] })] }));
+    return (_jsxs("section", { className: "simple-page", children: [_jsxs("div", { className: "simple-head", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "PAYMENTS" }), _jsx("h1", { children: "Payment status" }), _jsx("p", { children: "Check the authoritative status of a Razorpay test payment." })] }), _jsxs("span", { className: "mode-pill large", children: [_jsx("span", { className: "mode-dot" }), " Test mode"] })] }), _jsxs("div", { className: "lookup-card", children: [_jsxs("div", { className: "lookup-copy", children: [_jsx("div", { className: "lookup-icon", children: _jsx(Icon, { name: "card", size: 21 }) }), _jsxs("div", { children: [_jsx("strong", { children: "Look up an order" }), _jsx("span", { children: "Use the order ID returned after AgentShield creates a payment link." })] })] }), _jsxs("div", { className: "lookup-form", children: [_jsx("input", { value: orderId, onChange: (e) => setOrderId(e.target.value), onKeyDown: (e) => e.key === "Enter" && void lookup(), placeholder: "Order ID" }), _jsxs("button", { onClick: () => void lookup(), children: [_jsx(Icon, { name: "search", size: 17 }), " Check"] })] })] }), error && _jsxs("div", { className: "inline-error page-error", children: [_jsx(Icon, { name: "x", size: 15 }), " ", error] }), payment && (_jsxs("div", { className: "payment-result-card", children: [_jsxs("div", { className: "payment-result-main", children: [_jsx("span", { className: "eyebrow", children: "CURRENT STATE" }), _jsxs("div", { className: `payment-status ${payment.status.toLowerCase()}`, children: [_jsx("span", {}), " ", payment.status.replaceAll("_", " ")] }), _jsx("strong", { children: money(payment.amountInPaise) })] }), _jsxs("div", { className: "payment-result-meta", children: [_jsxs("div", { children: [_jsx("span", { children: "Order ID" }), _jsx("code", { children: payment.orderId })] }), _jsxs("div", { children: [_jsx("span", { children: "Payment link" }), _jsx("code", { children: payment.paymentLinkId || "—" })] }), payment.paymentLink && _jsxs("a", { href: payment.paymentLink, target: "_blank", rel: "noreferrer", children: ["Open checkout ", _jsx(Icon, { name: "external", size: 14 })] }), _jsxs("button", { onClick: () => navigate(`/payments/${payment.orderId}`), children: ["View details ", _jsx(Icon, { name: "arrow", size: 14 })] })] })] })), !payment && !error && _jsxs("div", { className: "page-empty", children: [_jsx("div", { children: _jsx(Icon, { name: "card", size: 22 }) }), _jsx("strong", { children: "No payment selected" }), _jsx("span", { children: "Create a payment from the Agent page, then paste its order ID here." })] })] }));
 }

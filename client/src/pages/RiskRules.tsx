@@ -1,81 +1,54 @@
 import { useState } from "react";
-import { useApi } from "../hooks/useApi";
-import { apiGetMerchant } from "../services/api";
-import LoadingState from "../components/LoadingState";
-import ErrorState from "../components/ErrorState";
-import StatusBadge from "../components/StatusBadge";
+import { apiSimulation } from "../services/api";
+import Icon from "../components/Icon";
+
+const scenarios = [
+  [1, "Valid transaction", "Normal purchase"],
+  [2, "Spending limit violation", "Amount exceeds merchant limit"],
+  [3, "Price mismatch", "AI amount differs from catalog"],
+  [4, "Excessive discount", "Discount exceeds policy"],
+  [5, "Duplicate payment", "Replay of a completed payment"],
+  [6, "Missing inventory", "Requested stock is unavailable"],
+  [7, "Unauthorized action", "Action is outside permissions"],
+  [8, "Malformed AI output", "Structured proposal is invalid"],
+  [9, "Payment timeout", "Execution reaches an uncertain state"],
+  [10, "Recovery", "Unknown payment state is reconciled"],
+] as const;
 
 export default function RiskRules() {
-  const { data: merchant, error: merchantError, loading: merchantLoading, refetch } = useApi<
-    { _id: string; name: string; policy: any; createdAt: string; updatedAt: string }
-  >(
-    { fn: apiGetMerchant, deps: [] }
-  );
+  const [selected, setSelected] = useState(0);
+  const [result, setResult] = useState<{ scenario: { id: number; name: string }; expected: string; result: unknown } | null>(null);
+  const [running, setRunning] = useState(false);
 
-  if (merchantLoading) {
-    return <LoadingState />;
+  async function run(id: number) {
+    setSelected(id);
+    setRunning(true);
+    try { setResult(await apiSimulation(id)); } finally { setRunning(false); }
   }
-
-  if (merchantError) {
-    return <ErrorState error={merchantError} onRetry={refetch} />;
-  }
-
-  if (!merchant) {
-    return <div className="text-center py-8 text-neutral-400">Merchant not found</div>;
-  }
-
-  const policy = merchant.policy;
 
   return (
-    <div className="p-6">
-      <h1 className="text-2xl font-semibold text-neutral-900">Risk & Rules</h1>
-      <p className="mt-1 text-neutral-500">Current merchant policy settings.</p>
-
-      <div className="mt-6 bg-white rounded-lg border border-neutral-200 p-4 shadow-sm">
-        <h3 className="text-lg font-semibold text-neutral-900 mb-3">Merchant</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <p className="text-sm text-neutral-500">Name</p>
-            <p className="font-medium text-neutral-900">{merchant.name}</p>
-          </div>
-          <div>
-            <p className="text-sm text-neutral-500">Created</p>
-            <p className="font-medium text-neutral-900">{new Date(merchant.createdAt).toLocaleString()}</p>
-          </div>
+    <section className="simple-page simulator-page">
+      <div className="simple-head"><div><p className="eyebrow">SAFETY SIMULATOR</p><h1>Prove the guardrails</h1><p>Run the ten predefined scenarios from the SRS and see how AgentShield responds.</p></div><div className="sim-badge"><Icon name="shield" size={15} /> deterministic</div></div>
+      <div className="simulator-grid">
+        <div className="scenario-list">
+          {scenarios.map(([id, name, description]) => (
+            <button key={id} className={`scenario ${selected === id ? "selected" : ""}`} onClick={() => void run(id)}>
+              <span className="scenario-number">{String(id).padStart(2, "0")}</span><span><strong>{name}</strong><small>{description}</small></span><Icon name="arrow" size={15} />
+            </button>
+          ))}
+        </div>
+        <div className="simulation-result">
+          {!result ? <div className="sim-empty"><div className="security-orb"><Icon name="shield" size={24} /></div><strong>Select a scenario</strong><span>The backend runs the actual deterministic simulation. This screen only visualizes its result.</span></div> : (
+            <div className="result-content">
+              <p className="eyebrow">SCENARIO {String(result.scenario.id).padStart(2, "0")}</p>
+              <h2>{result.scenario.name}</h2>
+              <div className={`result-decision ${String(result.expected).toLowerCase()}`}><span>{running ? "…" : result.expected}</span></div>
+              <div className="result-box"><span>Expected outcome</span><strong>{String(result.expected)}</strong><small>Returned by the AgentShield simulation endpoint.</small></div>
+              <details><summary>Raw simulation result</summary><pre>{JSON.stringify(result.result, null, 2)}</pre></details>
+            </div>
+          )}
         </div>
       </div>
-
-      <div className="mt-4 bg-white rounded-lg border border-neutral-200 p-4 shadow-sm">
-        <h3 className="text-lg font-semibold text-neutral-900 mb-3">Policy</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <p className="text-sm text-neutral-500">Max Transaction Amount</p>
-            <p className="font-medium text-neutral-900">₹{(policy.maxTransactionAmount / 100).toLocaleString("en-IN")}</p>
-          </div>
-          <div>
-            <p className="text-sm text-neutral-500">Max Discount Percent</p>
-            <p className="font-medium text-neutral-900">{policy.maxDiscountPercent}%</p>
-          </div>
-          <div>
-            <p className="text-sm text-neutral-500">Human Approval Required</p>
-            <p className="font-medium text-neutral-900">{policy.requireHumanApproval ? "Yes" : "No"}</p>
-          </div>
-          <div>
-            <p className="text-sm text-neutral-500">Allow Refunds</p>
-            <p className="font-medium text-neutral-900">{policy.allowRefunds ? "Yes" : "No"}</p>
-          </div>
-          <div>
-            <p className="text-sm text-neutral-500">Allow Payouts</p>
-            <p className="font-medium text-neutral-900">{policy.allowPayouts ? "Yes" : "No"}</p>
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-4 bg-neutral-50 rounded-lg border border-neutral-200 p-4">
-        <p className="text-sm text-neutral-600">
-          These rules are enforced by AgentShield's deterministic policy engine. The AI cannot override them.
-        </p>
-      </div>
-    </div>
+    </section>
   );
 }

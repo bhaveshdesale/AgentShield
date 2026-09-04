@@ -1,21 +1,21 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import { useParams } from "react-router-dom";
-import { useApi } from "../hooks/useApi";
-import { apiGetOrderById } from "../services/api";
-import LoadingState from "../components/LoadingState";
-import ErrorState from "../components/ErrorState";
-import StatusBadge from "../components/StatusBadge";
+import { useEffect, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import { apiPaymentStatus } from "../services/api";
+import Icon from "../components/Icon";
+const money = (p) => p == null ? "—" : `₹${(p / 100).toLocaleString("en-IN")}`;
 export default function PaymentDetail() {
     const { orderId } = useParams();
-    const { data: order, error, loading, refetch } = useApi({ fn: () => apiGetOrderById(orderId || ""), deps: [orderId] });
-    if (loading) {
-        return _jsx(LoadingState, {});
-    }
-    if (error) {
-        return _jsx(ErrorState, { error: error, onRetry: refetch });
-    }
-    if (!order) {
-        return _jsx("div", { className: "text-center py-8 text-neutral-400", children: "Order not found" });
-    }
-    return (_jsxs("div", { className: "p-6", children: [_jsx("h1", { className: "text-2xl font-semibold text-neutral-900", children: "Payment Details" }), _jsxs("p", { className: "mt-1 text-neutral-500", children: ["Order reference: ", order.referenceId] }), _jsxs("div", { className: "mt-6 grid grid-cols-1 md:grid-cols-2 gap-4", children: [_jsxs("div", { className: "bg-white rounded-lg border border-neutral-200 p-4 shadow-sm", children: [_jsx("h3", { className: "text-sm font-medium text-neutral-500", children: "Amount" }), _jsxs("p", { className: "text-xl font-semibold text-neutral-900 mt-1", children: ["\u20B9", (order.amountInPaise / 100).toLocaleString("en-IN")] })] }), _jsxs("div", { className: "bg-white rounded-lg border border-neutral-200 p-4 shadow-sm", children: [_jsx("h3", { className: "text-sm font-medium text-neutral-500", children: "Status" }), _jsx("div", { className: "mt-1", children: _jsx(StatusBadge, { status: order.status }) })] }), _jsxs("div", { className: "bg-white rounded-lg border border-neutral-200 p-4 shadow-sm", children: [_jsx("h3", { className: "text-sm font-medium text-neutral-500", children: "Currency" }), _jsx("p", { className: "text-neutral-900 mt-1", children: order.currency })] }), _jsxs("div", { className: "bg-white rounded-lg border border-neutral-200 p-4 shadow-sm", children: [_jsx("h3", { className: "text-sm font-medium text-neutral-500", children: "Last Updated" }), _jsx("p", { className: "text-neutral-900 mt-1", children: new Date(order.updatedAt).toLocaleString() })] })] }), order.razorpayPaymentLinkId && (_jsxs("div", { className: "mt-6 bg-white rounded-lg border border-neutral-200 p-4 shadow-sm", children: [_jsx("h3", { className: "text-sm font-medium text-neutral-500", children: "Razorpay Payment Link" }), _jsxs("div", { className: "mt-2 space-y-1", children: [_jsxs("div", { className: "text-sm", children: [_jsx("span", { className: "text-neutral-500", children: "ID:" }), " ", order.razorpayPaymentLinkId] }), _jsxs("div", { className: "text-sm", children: [_jsx("span", { className: "text-neutral-500", children: "URL:" }), _jsx("a", { href: order.razorpayPaymentLinkUrl, target: "_blank", rel: "noopener noreferrer", className: "text-primary-600 hover:underline ml-1", children: order.razorpayPaymentLinkUrl })] })] })] })), _jsxs("div", { className: "mt-6", children: [_jsx("h3", { className: "text-lg font-semibold text-neutral-900", children: "Order Items" }), _jsx("div", { className: "mt-3 overflow-x-auto rounded-lg border border-neutral-200 bg-white", children: _jsxs("table", { className: "w-full text-sm", children: [_jsx("thead", { children: _jsxs("tr", { className: "border-b border-neutral-200 bg-neutral-50", children: [_jsx("th", { className: "px-4 py-2 text-left font-medium text-neutral-500", children: "Product" }), _jsx("th", { className: "px-4 py-2 text-left font-medium text-neutral-500", children: "Quantity" }), _jsx("th", { className: "px-4 py-2 text-left font-medium text-neutral-500", children: "Unit Price" }), _jsx("th", { className: "px-4 py-2 text-left font-medium text-neutral-500", children: "Subtotal" })] }) }), _jsx("tbody", { children: order.items.map((item, i) => (_jsxs("tr", { className: "border-b border-neutral-200 last:border-0", children: [_jsxs("td", { className: "px-4 py-2 text-neutral-900", children: ["Product ID: ", item.productId] }), _jsx("td", { className: "px-4 py-2 text-neutral-900", children: item.quantity }), _jsxs("td", { className: "px-4 py-2 text-neutral-900", children: ["\u20B9", (item.unitPriceInPaise / 100).toLocaleString("en-IN")] }), _jsxs("td", { className: "px-4 py-2 font-medium text-neutral-900", children: ["\u20B9", ((item.unitPriceInPaise * item.quantity) / 100).toLocaleString("en-IN")] })] }, i))) })] }) })] })] }));
+    const [payment, setPayment] = useState(null);
+    const [error, setError] = useState("");
+    useEffect(() => {
+        if (!orderId)
+            return;
+        apiPaymentStatus(orderId).then(setPayment).catch((e) => setError(e instanceof Error ? e.message : "Payment unavailable."));
+    }, [orderId]);
+    if (error)
+        return _jsxs("section", { className: "simple-page", children: [_jsxs("div", { className: "inline-error page-error", children: [_jsx(Icon, { name: "x", size: 15 }), " ", error] }), _jsx(Link, { className: "text-link", to: "/payments", children: "\u2190 Back to payments" })] });
+    if (!payment)
+        return _jsx("section", { className: "simple-page", children: _jsx("div", { className: "page-loading", children: "Loading payment\u2026" }) });
+    return (_jsxs("section", { className: "simple-page", children: [_jsxs("div", { className: "simple-head", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "PAYMENT DETAIL" }), _jsx("h1", { children: payment.orderId.slice(-10) }), _jsx("p", { children: "Authoritative state reconciled by AgentShield." })] }), _jsxs("div", { className: `payment-status ${payment.status.toLowerCase()}`, children: [_jsx("span", {}), " ", payment.status.replaceAll("_", " ")] })] }), _jsxs("div", { className: "detail-surface", children: [_jsxs("div", { className: "detail-amount", children: [_jsx("span", { children: "AMOUNT" }), _jsx("strong", { children: money(payment.amountInPaise) }), _jsx("small", { children: "INR \u00B7 server verified" })] }), _jsxs("div", { className: "detail-field", children: [_jsx("span", { children: "ORDER ID" }), _jsx("code", { children: payment.orderId })] }), _jsxs("div", { className: "detail-field", children: [_jsx("span", { children: "PAYMENT LINK ID" }), _jsx("code", { children: payment.paymentLinkId || "—" })] }), payment.paymentLink && _jsxs("a", { className: "approve-button compact", href: payment.paymentLink, target: "_blank", rel: "noreferrer", children: ["Open Razorpay checkout ", _jsx(Icon, { name: "external", size: 15 })] })] }), _jsx(Link, { className: "text-link", to: "/payments", children: "\u2190 Back to payments" })] }));
 }

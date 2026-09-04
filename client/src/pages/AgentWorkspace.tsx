@@ -1,212 +1,235 @@
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { useApi } from "../hooks/useApi";
-import type { Action, ActionProposal, PolicyEvaluationResult, OrderStatus } from "../types";
-import type { ApproveActionResponse } from "../types";
-import { apiAgentChat, apiValidateAction, apiApproveAction } from "../services/api";
-import AgentMessage from "../components/AgentMessage";
-import ActionCard from "../components/ActionCard";
-import ApprovalPanel from "../components/ApprovalPanel";
-import LoadingState from "../components/LoadingState";
-import ErrorState from "../components/ErrorState";
-import StatusBadge from "../components/StatusBadge";
-import MetricCard from "../components/MetricCard";
-import { useToast } from "../hooks/useToast";
+import { useMemo, useState, type FormEvent } from "react";
+import type { Action, AgentChatResponse, Product, PaymentResult } from "../types";
+import { apiAgentChat, apiApproveAction, apiCreatePayment, apiProducts, apiValidateAction } from "../services/api";
+import Icon from "../components/Icon";
+
+const money = (paise: number) => `₹${(paise / 100).toLocaleString("en-IN")}`;
+
+type Message = { role: "agent" | "user"; text: string };
 
 export default function AgentWorkspace() {
-  const navigate = useNavigate();
-  const { showToast } = useToast();
-  const [agentMessage, setAgentMessage] = useState<string>("");
-  const [conversationId, setConversationId] = useState<string | undefined>();
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [result, setResult] = useState<AgentChatResponse | null>(null);
   const [action, setAction] = useState<Action | null>(null);
-  const [isApproving, setIsApproving] = useState(false);
+  const [payment, setPayment] = useState<PaymentResult | null>(null);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
-  const { data: agentResult, error: agentError, loading: agentLoading } = useApi<{
-    conversationId: string;
-    source: "llm" | "fallback";
-    message: string;
-    recommendations: { productId: string; name: string; priceInPaise: number; reason: string }[];
-    proposal: ActionProposal | undefined;
-    policyResult: PolicyEvaluationResult | undefined;
-  }>(
-    {
-      fn: () => apiAgentChat(agentMessage, conversationId),
-      deps: [agentMessage, conversationId],
-    }
-  );
+  const started = messages.length > 0;
+  const suggestions = useMemo(() => [
+    "Find wireless headphones under ₹5,000",
+    "Buy the artisan coffee kit",
+    "Find a laptop under ₹50,000",
+  ], []);
 
-  useEffect(() => {
-    if (agentResult) {
-      setConversationId(agentResult.conversationId);
-      setAction(null);
-      if (agentResult.proposal && agentResult.policyResult) {
-        void (async () => {
-          try {
-            const validateResponse = await apiValidateAction({
-              action: agentResult.proposal?.action || "",
-              items: agentResult.proposal?.items.map((item: { productId: string; quantity: number }) => ({
-                productId: item.productId,
-                quantity: item.quantity,
-              })) || [],
-              proposedAmountInPaise: agentResult.proposal?.proposedAmountInPaise || 0,
-              reason: agentResult.proposal?.reason || "",
-              requiresApproval: agentResult.proposal?.requiresApproval || true,
-              referenceId: agentResult.proposal?.referenceId || "",
-              conversationId: conversationId,
-              discountPercent: agentResult.proposal?.discountPercent,
-            });
-            setAction({
-              _id: validateResponse.actionId,
-              conversationId: agentResult.conversationId,
-              referenceId: agentResult.proposal!.referenceId,
-              action: agentResult.proposal!.action,
-              proposal: agentResult.proposal!,
-              reason: agentResult.proposal!.reason,
-policyResult: {
-                 decision: agentResult.policyResult?.decision || "ALLOW",
-                 checks: agentResult.policyResult?.checks || [],
-                 reason: agentResult.policyResult?.reason || "",
-                 verifiedAmountInPaise: agentResult.policyResult?.verifiedAmountInPaise || 0,
-                 approvalRequired: agentResult.policyResult?.approvalRequired || false,
-               },
-              verifiedAmountInPaise: agentResult.policyResult?.verifiedAmountInPaise || 0,
-              approvalRequired: agentResult.policyResult?.approvalRequired || false,
-              discountPercent: agentResult.proposal?.discountPercent,
-              approvalStatus: "PENDING",
-              executionStatus: "NOT_STARTED",
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            });
-          } catch (e) {
-            showToast(e instanceof Error ? e.message : "Failed to validate proposal", "error");
-          }
-        })();
-      }
-    }
-  }, [agentResult]);
-
-  const handleApprove = async () => {
-    if (!action) return;
-    setIsApproving(true);
+  async function sendMessage(value = input) {
+    const message = value.trim();
+    if (!message || busy) return;
+    setInput("");
+    setMessages((current) => [...current, { role: "user", text: message }]);
+    setBusy(true);
+    setError("");
     try {
-      const result = await apiApproveAction(action._id);
-      setAction({
-        ...action,
-        approvalStatus: "APPROVED",
-        executionStatus: "IN_PROGRESS",
-      });
-      showToast("Payment link created successfully", "success");
-      navigate(`/payments/${result.orderId}`);
-    } catch (e) {
-      const error = e as Error & { statusCode?: number; code?: string };
-      if (error.statusCode === 409 && error.code === "DUPLICATE_REFERENCE") {
-        showToast("Action already processed. Redirecting to approvals...", "info");
-        navigate("/approvals");
-      } else {
-        showToast(error.message || "Failed to create payment link", "error");
+      const response = await apiAgentChat(message, result?.conversationId);
+      setResult(response);
+      setMessages((current) => [...current, { role: "agent", text: response.message }]);
+      const catalog = await apiProducts();
+      setProducts(catalog);
+      if (response.proposal && response.policyResult) {
+        const validated = await apiValidateAction({
+          ...response.proposal,
+          conversationId: response.conversationId,
+        });
+        setAction({
+          _id: validated.actionId,
+          conversationId: response.conversationId,
+          referenceId: response.proposal.referenceId,
+          action: response.proposal.action,
+          proposal: response.proposal,
+          reason: response.proposal.reason,
+          policyResult: validated,
+          verifiedAmountInPaise: validated.verifiedAmountInPaise,
+          approvalRequired: validated.approvalRequired,
+          approvalStatus: validated.approvalRequired ? "PENDING" : "NOT_REQUIRED",
+          executionStatus: validated.decision === "ALLOW" ? "NOT_STARTED" : "BLOCKED",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        setPayment(null);
       }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "The agent could not complete the request.");
     } finally {
-      setIsApproving(false);
+      setBusy(false);
     }
-  };
-
-  const handleReject = () => {
-    setAction({
-      ...action,
-      approvalStatus: "REJECTED",
-      executionStatus: "BLOCKED",
-    } as Action);
-    showToast("Action rejected", "info");
-  };
-
-  if (agentLoading) {
-    return <LoadingState />;
   }
 
-  if (agentError) {
-    return <ErrorState error={agentError} />;
+  async function approve() {
+    if (!action || action.policyResult?.decision !== "ALLOW" || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await apiApproveAction(action._id);
+      const created = await apiCreatePayment(action._id);
+      setPayment(created);
+      setAction((current) => current ? { ...current, approvalStatus: "APPROVED", executionStatus: "IN_PROGRESS" } : current);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Approval failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onSubmit(event: FormEvent) {
+    event.preventDefault();
+    void sendMessage();
+  }
+
+  if (!started) {
+    return (
+      <section className="agent-home">
+        <div className="agent-intro">
+          <div className="agent-avatar" aria-hidden="true">
+            <span className="avatar-eye left" />
+            <span className="avatar-eye right" />
+            <span className="avatar-body" />
+            <span className="avatar-shadow" />
+          </div>
+          <p className="home-kicker">SECURE COMMERCE AGENT</p>
+          <h1>What can I help you <span>buy?</span></h1>
+          <p className="home-subtitle">Ask naturally. AgentShield verifies every proposed transaction before money can move.</p>
+        </div>
+
+        <form className="composer hero-composer" onSubmit={onSubmit}>
+          <textarea
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void sendMessage();
+              }
+            }}
+            placeholder="Chat with your assistant..."
+            rows={2}
+            autoFocus
+          />
+          <div className="composer-bottom">
+            <span className="composer-hint"><Icon name="shield" size={14} /> Policy protected</span>
+            <button className="send-button" disabled={!input.trim() || busy} aria-label="Send">
+              <Icon name="arrow" size={18} />
+            </button>
+          </div>
+        </form>
+
+        <div className="suggestions">
+          {suggestions.map((suggestion) => (
+            <button key={suggestion} onClick={() => void sendMessage(suggestion)}>{suggestion}</button>
+          ))}
+        </div>
+
+        <div className="trust-line"><span className="trust-check">✓</span> AI proposes · AgentShield authorizes · You approve · Razorpay executes</div>
+      </section>
+    );
   }
 
   return (
-    <div className="p-6">
-      <h1 className="text-2xl font-semibold text-neutral-900">Agent Workspace</h1>
-      <p className="mt-1 text-neutral-500">Communicate with the commerce agent and review proposals.</p>
-
-      <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg border border-neutral-200 p-4 shadow-sm">
-          <h2 className="text-lg font-semibold text-neutral-900 mb-3">AI Conversation</h2>
-          {agentResult ? (
-            <div className="space-y-4">
-              <AgentMessage chat={agentResult} />
-              {agentResult.recommendations.map((rec: { productId: string; name: string; priceInPaise: number; reason: string }) => (
-                <div key={rec.productId} className="text-sm border-t border-neutral-100 pt-2">
-                  <div className="font-medium text-neutral-900">{rec.name}</div>
-                  <div className="text-neutral-600">₹{(rec.priceInPaise / 100).toLocaleString("en-IN")}</div>
-                  <div className="text-neutral-500 text-xs mt-1">{rec.reason}</div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-neutral-400 text-sm">Send a message to start the conversation.</div>
-          )}
-
-          <div className="mt-4 flex gap-2">
-            <input
-              type="text"
-              placeholder="Type your request..."
-              className="flex-1 px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-primary-500"
-              value={agentMessage}
-              onChange={(e) => setAgentMessage(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && agentMessage && !agentLoading && setAgentMessage("")}
-            />
-            <button
-              onClick={() => agentMessage && !agentLoading && setAgentMessage("")}
-              className="px-4 py-2 bg-primary-600 text-white text-sm font-medium rounded-lg hover:bg-primary-700 disabled:opacity-50"
-              disabled={!agentMessage || agentLoading}
-            >
-              Send
-            </button>
-          </div>
+    <section className="agent-session">
+      <div className="session-header">
+        <div>
+          <p className="eyebrow">PROTECTED SESSION</p>
+          <h1>Commerce agent</h1>
         </div>
-
-        <div className="space-y-4">
-          <MetricCard title="Agent Status" value="ONLINE" icon={<span>🟢</span>} variant="success" />
-          <MetricCard title="Actions Today" value="12" subtitle="3 approved, 2 blocked" variant="default" />
-          <MetricCard title="Recovery Queue" value="2" subtitle="Unknown states waiting" variant="warning" />
-
-          <div className="bg-white rounded-lg border border-neutral-200 p-4 shadow-sm">
-            <h3 className="text-lg font-semibold text-neutral-900">Current Action</h3>
-            {action ? (
-              <div>
-                <ActionCard proposal={action.proposal} policyResult={action.policyResult} actionId={action._id} onApprove={handleApprove} isApproving={isApproving} />
-                <div className="mt-4 space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-neutral-500">Execution</span>
-                    <StatusBadge status={action.executionStatus as OrderStatus} />
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-neutral-500">Approval</span>
-                    <StatusBadge status={action.approvalStatus as OrderStatus} />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="text-neutral-400 text-sm py-4">No action in progress. Send a message to start.</div>
-            )}
-          </div>
-
-          {action && (action.approvalStatus === "PENDING" || action.approvalStatus === "NOT_REQUIRED") && (
-            <ApprovalPanel
-              actionId={action._id}
-              verifiedAmountInPaise={action.verifiedAmountInPaise}
-              isApproving={isApproving}
-              onApprove={handleApprove}
-              onReject={handleReject}
-              approvalResult={undefined}
-            />
-          )}
-        </div>
+        <button className="new-session" onClick={() => { setMessages([]); setResult(null); setAction(null); setPayment(null); setError(""); }}>
+          New conversation
+        </button>
       </div>
-    </div>
+
+      <div className="session-grid">
+        <section className="conversation-card">
+          <div className="conversation-scroll">
+            {messages.map((message, index) => (
+              <div className={`chat-message ${message.role}`} key={`${message.role}-${index}`}>
+                {message.role === "agent" && <div className="mini-agent"><Icon name="shield" size={14} /></div>}
+                <div className="chat-bubble">{message.text}</div>
+              </div>
+            ))}
+            {busy && <div className="chat-message agent"><div className="mini-agent"><Icon name="shield" size={14} /></div><div className="chat-bubble typing"><i /> <i /> <i /></div></div>}
+          </div>
+
+          <form className="composer session-composer" onSubmit={onSubmit}>
+            <textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="Tell the agent what you want to buy..." rows={1} />
+            <button className="send-button" disabled={!input.trim() || busy} aria-label="Send"><Icon name="arrow" size={17} /></button>
+          </form>
+          {result?.source === "fallback" && <p className="fallback-note">Using deterministic fallback agent. Authorization remains server-side.</p>}
+        </section>
+
+        <aside className="security-card">
+          <div className="security-header">
+            <div><p className="eyebrow">AGENTSHIELD</p><h2>Authorization</h2></div>
+            <span className="secure-badge"><span /> protected</span>
+          </div>
+
+          {error && <div className="inline-error"><Icon name="x" size={15} /> {error}</div>}
+
+          {!action && <div className="security-empty"><div className="security-orb"><Icon name="shield" size={25} /></div><strong>Waiting for a proposal</strong><span>The agent can recommend a product, but only this server-side policy layer can authorize payment.</span></div>}
+
+          {action && (
+            <>
+              <div className={`decision-banner ${action.policyResult?.decision.toLowerCase()}`}>
+                <span className="decision-symbol">{action.policyResult?.decision === "ALLOW" ? "✓" : action.policyResult?.decision === "BLOCK" ? "×" : "!"}</span>
+                <div><strong>{action.policyResult?.decision === "ALLOW" ? "Allowed — approval required" : action.policyResult?.decision === "BLOCK" ? "Blocked by policy" : "Escalation required"}</strong><span>{action.policyResult?.reason}</span></div>
+              </div>
+
+              <div className="proposal-card">
+                <p className="eyebrow">ACTION PROPOSAL</p>
+                <h3>{action.action.replaceAll("_", " ")}</h3>
+                <div className="amount-line"><span>Verified amount</span><strong>{money(action.verifiedAmountInPaise)}</strong></div>
+                <div className="amount-line muted"><span>Agent proposed</span><span>{money(action.proposal.proposedAmountInPaise)}</span></div>
+                <div className="reference-line"><span>ref</span><code>{action.referenceId}</code></div>
+              </div>
+
+              <div className="policy-list">
+                <div className="policy-title">POLICY CHECKS</div>
+                {action.policyResult?.checks.map((check) => (
+                  <div className="policy-row" key={check.name}>
+                    <span className={`policy-icon ${check.passed ? "pass" : "fail"}`}>{check.passed ? "✓" : "×"}</span>
+                    <div><strong>{check.name}</strong><span>{check.message}</span></div>
+                  </div>
+                ))}
+              </div>
+
+              {payment ? (
+                <div className="payment-ready">
+                  <div><span className="eyebrow">PAYMENT LINK READY</span><strong>{money(action.verifiedAmountInPaise)}</strong></div>
+                  <a href={payment.paymentLink} target="_blank" rel="noreferrer">Open Razorpay checkout <Icon name="external" size={14} /></a>
+                </div>
+              ) : action.policyResult?.decision === "ALLOW" ? (
+                <button className="approve-button" disabled={busy} onClick={() => void approve()}>
+                  {busy ? "Creating secure payment link…" : "Approve purchase"}
+                  <Icon name="arrow" size={17} />
+                </button>
+              ) : null}
+            </>
+          )}
+        </aside>
+      </div>
+
+      {!!products.length && result?.recommendations?.length ? (
+        <div className="recommendations">
+          <div className="section-label">RECOMMENDED FROM CATALOG</div>
+          <div className="recommendation-list">
+            {result.recommendations.map((recommendation) => (
+              <div className="recommendation" key={recommendation.productId}>
+                <div className="recommendation-icon"><Icon name="box" size={18} /></div>
+                <div><strong>{recommendation.name}</strong><span>{money(recommendation.priceInPaise)} · {recommendation.reason}</span></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }

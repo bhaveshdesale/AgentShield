@@ -1,99 +1,34 @@
-import { useState, useEffect } from "react";
-import { useParams } from "react-router-dom";
-import { useApi } from "../hooks/useApi";
-import type { Order } from "../types";
-import { apiGetOrderById } from "../services/api";
-import LoadingState from "../components/LoadingState";
-import ErrorState from "../components/ErrorState";
-import StatusBadge from "../components/StatusBadge";
+import { useEffect, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import { apiPaymentStatus } from "../services/api";
+import type { PaymentStatus } from "../types";
+import Icon from "../components/Icon";
+
+const money = (p?: number) => p == null ? "—" : `₹${(p / 100).toLocaleString("en-IN")}`;
 
 export default function PaymentDetail() {
-  const { orderId } = useParams<{ orderId: string }>();
+  const { orderId } = useParams();
+  const [payment, setPayment] = useState<PaymentStatus | null>(null);
+  const [error, setError] = useState("");
 
-  const { data: order, error, loading, refetch } = useApi<Order>(
-    { fn: () => apiGetOrderById(orderId || ""), deps: [orderId] }
-  );
+  useEffect(() => {
+    if (!orderId) return;
+    apiPaymentStatus(orderId).then(setPayment).catch((e) => setError(e instanceof Error ? e.message : "Payment unavailable."));
+  }, [orderId]);
 
-  if (loading) {
-    return <LoadingState />;
-  }
-
-  if (error) {
-    return <ErrorState error={error} onRetry={refetch} />;
-  }
-
-  if (!order) {
-    return <div className="text-center py-8 text-neutral-400">Order not found</div>;
-  }
+  if (error) return <section className="simple-page"><div className="inline-error page-error"><Icon name="x" size={15} /> {error}</div><Link className="text-link" to="/payments">← Back to payments</Link></section>;
+  if (!payment) return <section className="simple-page"><div className="page-loading">Loading payment…</div></section>;
 
   return (
-    <div className="p-6">
-      <h1 className="text-2xl font-semibold text-neutral-900">Payment Details</h1>
-      <p className="mt-1 text-neutral-500">Order reference: {order.referenceId}</p>
-
-      <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white rounded-lg border border-neutral-200 p-4 shadow-sm">
-          <h3 className="text-sm font-medium text-neutral-500">Amount</h3>
-          <p className="text-xl font-semibold text-neutral-900 mt-1">₹{(order.amountInPaise / 100).toLocaleString("en-IN")}</p>
-        </div>
-        <div className="bg-white rounded-lg border border-neutral-200 p-4 shadow-sm">
-          <h3 className="text-sm font-medium text-neutral-500">Status</h3>
-          <div className="mt-1">
-            <StatusBadge status={order.status} />
-          </div>
-        </div>
-        <div className="bg-white rounded-lg border border-neutral-200 p-4 shadow-sm">
-          <h3 className="text-sm font-medium text-neutral-500">Currency</h3>
-          <p className="text-neutral-900 mt-1">{order.currency}</p>
-        </div>
-        <div className="bg-white rounded-lg border border-neutral-200 p-4 shadow-sm">
-          <h3 className="text-sm font-medium text-neutral-500">Last Updated</h3>
-          <p className="text-neutral-900 mt-1">{new Date(order.updatedAt).toLocaleString()}</p>
-        </div>
+    <section className="simple-page">
+      <div className="simple-head"><div><p className="eyebrow">PAYMENT DETAIL</p><h1>{payment.orderId.slice(-10)}</h1><p>Authoritative state reconciled by AgentShield.</p></div><div className={`payment-status ${payment.status.toLowerCase()}`}><span /> {payment.status.replaceAll("_", " ")}</div></div>
+      <div className="detail-surface">
+        <div className="detail-amount"><span>AMOUNT</span><strong>{money(payment.amountInPaise)}</strong><small>INR · server verified</small></div>
+        <div className="detail-field"><span>ORDER ID</span><code>{payment.orderId}</code></div>
+        <div className="detail-field"><span>PAYMENT LINK ID</span><code>{payment.paymentLinkId || "—"}</code></div>
+        {payment.paymentLink && <a className="approve-button compact" href={payment.paymentLink} target="_blank" rel="noreferrer">Open Razorpay checkout <Icon name="external" size={15} /></a>}
       </div>
-
-      {order.razorpayPaymentLinkId && (
-        <div className="mt-6 bg-white rounded-lg border border-neutral-200 p-4 shadow-sm">
-          <h3 className="text-sm font-medium text-neutral-500">Razorpay Payment Link</h3>
-          <div className="mt-2 space-y-1">
-            <div className="text-sm">
-              <span className="text-neutral-500">ID:</span> {order.razorpayPaymentLinkId}
-            </div>
-            <div className="text-sm">
-              <span className="text-neutral-500">URL:</span>
-              <a href={order.razorpayPaymentLinkUrl} target="_blank" rel="noopener noreferrer" className="text-primary-600 hover:underline ml-1">
-                {order.razorpayPaymentLinkUrl}
-              </a>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="mt-6">
-        <h3 className="text-lg font-semibold text-neutral-900">Order Items</h3>
-        <div className="mt-3 overflow-x-auto rounded-lg border border-neutral-200 bg-white">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-neutral-200 bg-neutral-50">
-                <th className="px-4 py-2 text-left font-medium text-neutral-500">Product</th>
-                <th className="px-4 py-2 text-left font-medium text-neutral-500">Quantity</th>
-                <th className="px-4 py-2 text-left font-medium text-neutral-500">Unit Price</th>
-                <th className="px-4 py-2 text-left font-medium text-neutral-500">Subtotal</th>
-              </tr>
-            </thead>
-            <tbody>
-              {order.items.map((item, i) => (
-                <tr key={i} className="border-b border-neutral-200 last:border-0">
-                  <td className="px-4 py-2 text-neutral-900">Product ID: {item.productId}</td>
-                  <td className="px-4 py-2 text-neutral-900">{item.quantity}</td>
-                  <td className="px-4 py-2 text-neutral-900">₹{(item.unitPriceInPaise / 100).toLocaleString("en-IN")}</td>
-                  <td className="px-4 py-2 font-medium text-neutral-900">₹{((item.unitPriceInPaise * item.quantity) / 100).toLocaleString("en-IN")}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+      <Link className="text-link" to="/payments">← Back to payments</Link>
+    </section>
   );
 }

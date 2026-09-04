@@ -1,76 +1,21 @@
-const API_BASE = "/api";
-async function handleResponse(response) {
-    if (!response.ok) {
-        const errorBody = (await response.json().catch(() => ({
-            status: "error",
-            code: "UNKNOWN_ERROR",
-            message: "An unexpected error occurred.",
-        })));
-        const error = new Error(errorBody.message);
-        error.code = errorBody.code;
-        error.statusCode = response.status;
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
+async function request(path, init) {
+    const res = await fetch(`${API_BASE}${path}`, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers || {}) } });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+        const message = body?.message || "Request failed";
+        const error = Object.assign(new Error(message), { code: body?.code, statusCode: res.status });
         throw error;
     }
-    return (await response.json());
+    return body;
 }
-export async function apiHealth() {
-    return handleResponse(await fetch(`${API_BASE}/health`));
-}
-export async function apiAgentChat(message, conversationId) {
-    const body = { message };
-    if (conversationId) {
-        body.conversationId = conversationId;
-    }
-    return handleResponse(await fetch(`${API_BASE}/agent/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-    }));
-}
-export async function apiValidateAction(proposal) {
-    return handleResponse(await fetch(`${API_BASE}/actions/validate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(proposal),
-    }));
-}
-export async function apiApproveAction(actionId) {
-    return handleResponse(await fetch(`${API_BASE}/actions/${actionId}/approve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-    }));
-}
-export async function apiReconcilePayment(orderId) {
-    return handleResponse(await fetch(`${API_BASE}/payments/${orderId}/reconcile`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-    }));
-}
-export async function apiGetOrders() {
-    return handleResponse(await fetch(`${API_BASE}/orders`));
-}
-export async function apiGetOrderById(id) {
-    return handleResponse(await fetch(`${API_BASE}/orders/${id}`));
-}
-export async function apiGetProducts() {
-    return handleResponse(await fetch(`${API_BASE}/products`));
-}
-export async function apiGetMerchant() {
-    return handleResponse(await fetch(`${API_BASE}/merchants`));
-}
-export async function apiGetActions() {
-    return handleResponse(await fetch(`${API_BASE}/actions`));
-}
-export async function apiGetActionById(id) {
-    return handleResponse(await fetch(`${API_BASE}/actions/${id}`));
-}
-export async function apiGetAuditLogs(limit) {
-    const params = new URLSearchParams();
-    if (limit) {
-        params.set("limit", String(limit));
-    }
-    const query = params.toString();
-    return handleResponse(await fetch(`${API_BASE}/audit-logs${query ? `?${query}` : ""}`));
-}
+export const apiHealth = () => request("/health");
+export const apiProducts = () => request("/products");
+export const apiAgentChat = (message, conversationId) => request("/agent/chat", { method: "POST", body: JSON.stringify({ message, ...(conversationId ? { conversationId } : {}) }) });
+export const apiValidateAction = (proposal) => request("/actions/validate", { method: "POST", body: JSON.stringify(proposal) });
+export const apiApproveAction = (actionId) => request("/actions/approve", { method: "POST", body: JSON.stringify({ actionId }) });
+export const apiCreatePayment = (actionId) => request("/payments/create", { method: "POST", body: JSON.stringify({ actionId }) });
+export const apiPaymentStatus = (orderId) => request(`/payments/${encodeURIComponent(orderId)}/status`);
+export const apiDashboard = () => request("/dashboard/stats");
+export const apiAudit = (limit = 50) => request(`/audit?limit=${limit}`);
+export const apiSimulation = (scenarioId) => request("/simulation/run", { method: "POST", body: JSON.stringify({ scenarioId }) });

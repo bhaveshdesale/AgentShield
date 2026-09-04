@@ -1,16 +1,18 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import { useApi } from "../hooks/useApi";
-import { apiGetAuditLogs } from "../services/api";
-import LoadingState from "../components/LoadingState";
-import ErrorState from "../components/ErrorState";
-import StatusBadge from "../components/StatusBadge";
+import { useEffect, useState } from "react";
+import { apiAudit } from "../services/api";
+import Icon from "../components/Icon";
 export default function AuditLog() {
-    const { data: logs, error, loading, refetch } = useApi({ fn: () => apiGetAuditLogs(50), deps: [] });
-    if (loading) {
-        return _jsx(LoadingState, {});
+    const [logs, setLogs] = useState([]);
+    const [query, setQuery] = useState("");
+    const [loading, setLoading] = useState(true);
+    async function load() { setLoading(true); try {
+        setLogs(await apiAudit(100));
     }
-    if (error) {
-        return _jsx(ErrorState, { error: error, onRetry: refetch });
-    }
-    return (_jsxs("div", { className: "p-6", children: [_jsx("h1", { className: "text-2xl font-semibold text-neutral-900", children: "Audit Log" }), _jsx("p", { className: "mt-1 text-neutral-500", children: "View system events and actions." }), _jsx("div", { className: "mt-6 overflow-x-auto rounded-lg border border-neutral-200 bg-white", children: _jsxs("table", { className: "w-full text-sm", children: [_jsx("thead", { children: _jsxs("tr", { className: "border-b border-neutral-200 bg-neutral-50", children: [_jsx("th", { className: "px-4 py-2 text-left font-medium text-neutral-500", children: "Timestamp" }), _jsx("th", { className: "px-4 py-2 text-left font-medium text-neutral-500", children: "Event" }), _jsx("th", { className: "px-4 py-2 text-left font-medium text-neutral-500", children: "Action ID" }), _jsx("th", { className: "px-4 py-2 text-left font-medium text-neutral-500", children: "Details" })] }) }), _jsx("tbody", { children: logs && logs.length > 0 ? (logs.map((log) => (_jsxs("tr", { className: "border-b border-neutral-200 last:border-0 hover:bg-neutral-50", children: [_jsx("td", { className: "px-4 py-2 text-neutral-900", children: new Date(log.timestamp).toLocaleString() }), _jsx("td", { className: "px-4 py-2", children: _jsx(StatusBadge, { status: log.event }) }), _jsx("td", { className: "px-4 py-2 font-mono text-neutral-900", children: log.actionId || "N/A" }), _jsx("td", { className: "px-4 py-2 text-neutral-500", children: JSON.stringify(log.details, null, 2) })] }, log._id)))) : (_jsx("tr", { children: _jsx("td", { colSpan: 4, className: "px-4 py-8 text-center text-neutral-400", children: "No audit logs yet" }) })) })] }) })] }));
+    finally {
+        setLoading(false);
+    } }
+    useEffect(() => { void load(); }, []);
+    const filtered = logs.filter((log) => `${log.event} ${log.actionId ?? ""} ${JSON.stringify(log.details)}`.toLowerCase().includes(query.toLowerCase()));
+    return (_jsxs("section", { className: "simple-page", children: [_jsxs("div", { className: "simple-head", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "AUDIT TRAIL" }), _jsx("h1", { children: "What happened" }), _jsx("p", { children: "Policy and payment transitions recorded by the server." })] }), _jsxs("button", { className: "refresh-button", onClick: () => void load(), children: [_jsx(Icon, { name: "refresh", size: 16 }), " Refresh"] })] }), _jsxs("div", { className: "audit-toolbar", children: [_jsxs("div", { className: "search-field", children: [_jsx(Icon, { name: "search", size: 16 }), _jsx("input", { value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search events or action IDs" })] }), _jsxs("span", { children: [filtered.length, " events"] })] }), _jsx("div", { className: "audit-surface", children: loading ? _jsx("div", { className: "page-loading", children: "Loading audit trail\u2026" }) : filtered.length ? filtered.map((log) => (_jsxs("div", { className: "audit-entry", children: [_jsx("div", { className: `audit-marker ${log.event.includes("BLOCK") ? "danger" : log.event.includes("PAYMENT") ? "payment" : "normal"}` }), _jsxs("div", { className: "audit-main", children: [_jsx("strong", { children: log.event.replaceAll("_", " ") }), _jsx("span", { children: log.actionId ? `Action ${log.actionId.slice(-10)}` : "System event" })] }), _jsx("time", { children: new Date(log.timestamp).toLocaleString("en-IN") })] }, log._id))) : _jsxs("div", { className: "page-empty", children: [_jsx("div", { children: _jsx(Icon, { name: "activity", size: 22 }) }), _jsx("strong", { children: "No audit events" }), _jsx("span", { children: "Important decisions will appear here as the agent is used." })] }) })] }));
 }

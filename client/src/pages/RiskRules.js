@@ -1,19 +1,32 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import { useApi } from "../hooks/useApi";
-import { apiGetMerchant } from "../services/api";
-import LoadingState from "../components/LoadingState";
-import ErrorState from "../components/ErrorState";
+import { useState } from "react";
+import { apiSimulation } from "../services/api";
+import Icon from "../components/Icon";
+const scenarios = [
+    [1, "Valid transaction", "Normal purchase"],
+    [2, "Spending limit violation", "Amount exceeds merchant limit"],
+    [3, "Price mismatch", "AI amount differs from catalog"],
+    [4, "Excessive discount", "Discount exceeds policy"],
+    [5, "Duplicate payment", "Replay of a completed payment"],
+    [6, "Missing inventory", "Requested stock is unavailable"],
+    [7, "Unauthorized action", "Action is outside permissions"],
+    [8, "Malformed AI output", "Structured proposal is invalid"],
+    [9, "Payment timeout", "Execution reaches an uncertain state"],
+    [10, "Recovery", "Unknown payment state is reconciled"],
+];
 export default function RiskRules() {
-    const { data: merchant, error: merchantError, loading: merchantLoading, refetch } = useApi({ fn: apiGetMerchant, deps: [] });
-    if (merchantLoading) {
-        return _jsx(LoadingState, {});
+    const [selected, setSelected] = useState(0);
+    const [result, setResult] = useState(null);
+    const [running, setRunning] = useState(false);
+    async function run(id) {
+        setSelected(id);
+        setRunning(true);
+        try {
+            setResult(await apiSimulation(id));
+        }
+        finally {
+            setRunning(false);
+        }
     }
-    if (merchantError) {
-        return _jsx(ErrorState, { error: merchantError, onRetry: refetch });
-    }
-    if (!merchant) {
-        return _jsx("div", { className: "text-center py-8 text-neutral-400", children: "Merchant not found" });
-    }
-    const policy = merchant.policy;
-    return (_jsxs("div", { className: "p-6", children: [_jsx("h1", { className: "text-2xl font-semibold text-neutral-900", children: "Risk & Rules" }), _jsx("p", { className: "mt-1 text-neutral-500", children: "Current merchant policy settings." }), _jsxs("div", { className: "mt-6 bg-white rounded-lg border border-neutral-200 p-4 shadow-sm", children: [_jsx("h3", { className: "text-lg font-semibold text-neutral-900 mb-3", children: "Merchant" }), _jsxs("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-4", children: [_jsxs("div", { children: [_jsx("p", { className: "text-sm text-neutral-500", children: "Name" }), _jsx("p", { className: "font-medium text-neutral-900", children: merchant.name })] }), _jsxs("div", { children: [_jsx("p", { className: "text-sm text-neutral-500", children: "Created" }), _jsx("p", { className: "font-medium text-neutral-900", children: new Date(merchant.createdAt).toLocaleString() })] })] })] }), _jsxs("div", { className: "mt-4 bg-white rounded-lg border border-neutral-200 p-4 shadow-sm", children: [_jsx("h3", { className: "text-lg font-semibold text-neutral-900 mb-3", children: "Policy" }), _jsxs("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-4", children: [_jsxs("div", { children: [_jsx("p", { className: "text-sm text-neutral-500", children: "Max Transaction Amount" }), _jsxs("p", { className: "font-medium text-neutral-900", children: ["\u20B9", (policy.maxTransactionAmount / 100).toLocaleString("en-IN")] })] }), _jsxs("div", { children: [_jsx("p", { className: "text-sm text-neutral-500", children: "Max Discount Percent" }), _jsxs("p", { className: "font-medium text-neutral-900", children: [policy.maxDiscountPercent, "%"] })] }), _jsxs("div", { children: [_jsx("p", { className: "text-sm text-neutral-500", children: "Human Approval Required" }), _jsx("p", { className: "font-medium text-neutral-900", children: policy.requireHumanApproval ? "Yes" : "No" })] }), _jsxs("div", { children: [_jsx("p", { className: "text-sm text-neutral-500", children: "Allow Refunds" }), _jsx("p", { className: "font-medium text-neutral-900", children: policy.allowRefunds ? "Yes" : "No" })] }), _jsxs("div", { children: [_jsx("p", { className: "text-sm text-neutral-500", children: "Allow Payouts" }), _jsx("p", { className: "font-medium text-neutral-900", children: policy.allowPayouts ? "Yes" : "No" })] })] })] }), _jsx("div", { className: "mt-4 bg-neutral-50 rounded-lg border border-neutral-200 p-4", children: _jsx("p", { className: "text-sm text-neutral-600", children: "These rules are enforced by AgentShield's deterministic policy engine. The AI cannot override them." }) })] }));
+    return (_jsxs("section", { className: "simple-page simulator-page", children: [_jsxs("div", { className: "simple-head", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "SAFETY SIMULATOR" }), _jsx("h1", { children: "Prove the guardrails" }), _jsx("p", { children: "Run the ten predefined scenarios from the SRS and see how AgentShield responds." })] }), _jsxs("div", { className: "sim-badge", children: [_jsx(Icon, { name: "shield", size: 15 }), " deterministic"] })] }), _jsxs("div", { className: "simulator-grid", children: [_jsx("div", { className: "scenario-list", children: scenarios.map(([id, name, description]) => (_jsxs("button", { className: `scenario ${selected === id ? "selected" : ""}`, onClick: () => void run(id), children: [_jsx("span", { className: "scenario-number", children: String(id).padStart(2, "0") }), _jsxs("span", { children: [_jsx("strong", { children: name }), _jsx("small", { children: description })] }), _jsx(Icon, { name: "arrow", size: 15 })] }, id))) }), _jsx("div", { className: "simulation-result", children: !result ? _jsxs("div", { className: "sim-empty", children: [_jsx("div", { className: "security-orb", children: _jsx(Icon, { name: "shield", size: 24 }) }), _jsx("strong", { children: "Select a scenario" }), _jsx("span", { children: "The backend runs the actual deterministic simulation. This screen only visualizes its result." })] }) : (_jsxs("div", { className: "result-content", children: [_jsxs("p", { className: "eyebrow", children: ["SCENARIO ", String(result.scenario.id).padStart(2, "0")] }), _jsx("h2", { children: result.scenario.name }), _jsx("div", { className: `result-decision ${String(result.expected).toLowerCase()}`, children: _jsx("span", { children: running ? "…" : result.expected }) }), _jsxs("div", { className: "result-box", children: [_jsx("span", { children: "Expected outcome" }), _jsx("strong", { children: String(result.expected) }), _jsx("small", { children: "Returned by the AgentShield simulation endpoint." })] }), _jsxs("details", { children: [_jsx("summary", { children: "Raw simulation result" }), _jsx("pre", { children: JSON.stringify(result.result, null, 2) })] })] })) })] })] }));
 }
