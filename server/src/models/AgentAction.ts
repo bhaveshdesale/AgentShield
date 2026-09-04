@@ -50,10 +50,14 @@ const policyResultSchema = new Schema<PolicyResult>(
 const agentActionSchema = new Schema<AgentAction>(
   {
     conversationId: { type: String, required: true, trim: true, index: true },
+    referenceId: { type: String, required: true, trim: true, unique: true, index: true },
     action: { type: String, required: true, enum: AGENT_ACTION_TYPES },
     proposal: { type: actionProposalSchema, required: true },
     reason: { type: String, required: true },
     policyResult: { type: policyResultSchema },
+    verifiedAmountInPaise: { type: Number, required: true, min: 0 },
+    approvalRequired: { type: Boolean, required: true },
+    discountPercent: { type: Number, min: 0, max: 100 },
     approvalStatus: { type: String, required: true, enum: APPROVAL_STATUSES, default: "PENDING" },
     executionStatus: { type: String, required: true, enum: EXECUTION_STATUSES, default: "NOT_STARTED" },
   },

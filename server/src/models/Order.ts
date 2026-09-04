@@ -21,6 +21,7 @@ const orderSchema = new Schema<Order>(
     status: { type: String, required: true, enum: ORDER_STATUSES, default: "CREATED" },
     referenceId: { type: String, required: true, unique: true, trim: true },
     razorpayPaymentLinkId: { type: String },
+    razorpayPaymentLinkUrl: { type: String },
   },
   { timestamps: true }
 );

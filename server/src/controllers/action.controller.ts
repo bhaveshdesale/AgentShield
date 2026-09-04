@@ -1,6 +1,8 @@
 import type { NextFunction, Request, Response } from "express";
-import { Types } from "mongoose";
+import mongoose, { Types } from "mongoose";
+import { AgentActionModel } from "../models/AgentAction";
 import { MerchantModel } from "../models/Merchant";
+import { approveActionAndCreatePayment, recordAudit } from "../services/payment.service";
 import { evaluateAction } from "../services/policy.service";
 import { AppError } from "../utils/AppError";
 import { logger } from "../utils/logger";
@@ -14,13 +16,14 @@ interface ValidateActionRequestBody {
   requiresApproval?: unknown;
   referenceId?: unknown;
   discountPercent?: unknown;
+  conversationId?: unknown;
 }
 
 /**
  * Minimal structural validation of the externally supplied proposal body.
  * The policy engine performs the semantic/financial validation.
  */
-function parseProposalInput(body: ValidateActionRequestBody): ActionProposalInput {
+export function parseProposalInput(body: ValidateActionRequestBody): ActionProposalInput {
   const action = typeof body.action === "string" ? body.action : "";
   const referenceId =
     typeof body.referenceId === "string" && body.referenceId.trim().length > 0
@@ -41,9 +44,9 @@ function parseProposalInput(body: ValidateActionRequestBody): ActionProposalInpu
 
   let items: ActionProposalInput["items"] = [];
   if (Array.isArray(body.items)) {
-    items = body.items.flatMap((item) => {
+    items = body.items.map((item) => {
       if (typeof item !== "object" || item === null) {
-        return [];
+        throw new AppError("Each item must be an object with a valid productId and quantity.", 400, "INVALID_PROPOSAL");
       }
       const record = item as Record<string, unknown>;
       const productId =
@@ -58,9 +61,9 @@ function parseProposalInput(body: ValidateActionRequestBody): ActionProposalInpu
           : null;
 
       if (productId === null || quantity === null) {
-        return [];
+        throw new AppError("Each item must have a valid productId and positive integer quantity.", 400, "INVALID_PROPOSAL");
       }
-      return [{ productId, quantity }];
+      return { productId, quantity };
     });
   }
 
@@ -107,6 +110,42 @@ export async function validateAction(
     }
 
     const result: PolicyEvaluationResult = await evaluateAction(proposal, merchant.policy);
+    const body = req.body as ValidateActionRequestBody;
+    const conversationId =
+      typeof body.conversationId === "string" && body.conversationId.trim().length > 0
+        ? body.conversationId.trim()
+        : "external-validation";
+    const action = await AgentActionModel.create({
+      conversationId,
+      referenceId: proposal.referenceId,
+      action: proposal.action,
+      proposal: {
+        action: proposal.action,
+        items: proposal.items,
+        proposedAmountInPaise: proposal.proposedAmountInPaise,
+        reason: proposal.reason,
+        requiresApproval: proposal.requiresApproval,
+      },
+      reason: proposal.reason,
+      policyResult: { decision: result.decision, checks: result.checks },
+      verifiedAmountInPaise: result.verifiedAmountInPaise,
+      approvalRequired: result.approvalRequired,
+      ...(proposal.discountPercent === undefined ? {} : { discountPercent: proposal.discountPercent }),
+      approvalStatus: result.approvalRequired ? "PENDING" : "NOT_REQUIRED",
+      executionStatus: result.decision === "ALLOW" ? "NOT_STARTED" : "BLOCKED",
+    });
+    await recordAudit(
+      result.decision === "ALLOW" ? "ACTION_VALIDATED" : "ACTION_BLOCKED",
+      {
+        actionType: proposal.action,
+        proposedAmountInPaise: proposal.proposedAmountInPaise,
+        verifiedAmountInPaise: result.verifiedAmountInPaise,
+        policyDecision: result.decision,
+        approvalState: action.approvalStatus,
+        executionState: action.executionStatus,
+      },
+      String(action._id)
+    );
 
     logger.info("Policy evaluation completed", {
       action: proposal.action,
@@ -115,8 +154,21 @@ export async function validateAction(
       verifiedAmountInPaise: result.verifiedAmountInPaise,
     });
 
+    res.status(200).json({ actionId: String(action._id), ...result });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function approveAction(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const result = await approveActionAndCreatePayment({ actionId: req.params.actionId });
     res.status(200).json(result);
   } catch (error) {
+    if (error instanceof mongoose.mongo.MongoServerError && error.code === 11000) {
+      next(new AppError("An action with this reference already exists.", 409, "DUPLICATE_REFERENCE"));
+      return;
+    }
     next(error);
   }
 }

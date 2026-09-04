@@ -75,6 +75,7 @@ export interface Order {
   status: OrderStatus;
   referenceId: string;
   razorpayPaymentLinkId: string | undefined;
+  razorpayPaymentLinkUrl: string | undefined;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -116,10 +117,14 @@ export interface ActionProposalInput extends ActionProposal {
 
 export interface AgentAction {
   conversationId: string;
+  referenceId: string;
   action: AgentActionType;
   proposal: ActionProposal;
   reason: string;
   policyResult: PolicyResult | undefined;
+  verifiedAmountInPaise: number;
+  approvalRequired: boolean;
+  discountPercent: number | undefined;
   approvalStatus: ApprovalStatus;
   executionStatus: ExecutionStatus;
   createdAt: Date;
