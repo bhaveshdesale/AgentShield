@@ -1,3 +1,4 @@
+
 import express from "express";
 import cors from "cors";
 import { errorHandler } from "./middleware/errorHandler";
@@ -13,7 +14,7 @@ export function createApp(): express.Express {
 
   app.use(
     cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+      origin: process.env.CLIENT_URL || "http://localhost:5173",
     }),
   );
 
