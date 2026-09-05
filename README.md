@@ -333,10 +333,24 @@ AgentShield intentionally keeps financial authorization outside the LLM. The mod
 
 This creates a clear boundary between AI reasoning and financial execution.
 
+### Failure Handling
+
+AgentShield is designed to fail safely before money moves.
+
+If a proposal exceeds a transaction limit, uses unavailable inventory,
+contains an invalid quantity, or violates another policy, it is blocked
+before payment execution.
+
+For uncertain payment states caused by redirects, delayed webhooks, or
+external failures, AgentShield uses reconciliation and recovery instead
+of blindly retrying the payment.
+
+This ensures that failures do not silently turn into duplicate or
+unauthorized transactions.
+
 ---
 
 ## API
-
 The backend exposes the application flow through the following endpoints:
 
 ```http
