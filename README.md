@@ -40,10 +40,14 @@ AgentShield is an open-source safety and reliability layer for AI-powered commer
 ## Demo
 
 <p align="center">
-  <video src="./assets/demo.mp4" controls width="900"></video>
+  <a href="https://youtu.be/rWPqCKrf7cY">
+    <img src="./assets/demo-thumbnail.png" alt="AgentShield Demo" width="900" />
+  </a>
 </p>
 
-[▶ Watch the demo video](./assets/demo.mp4)
+<p align="center">
+  <strong>▶ Watch the AgentShield Demo</strong>
+</p>
 
 The demo walks through the complete AgentShield flow end to end:
 
