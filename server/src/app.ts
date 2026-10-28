@@ -4,17 +4,25 @@ import cors from "cors";
 import { errorHandler } from "./middleware/errorHandler";
 import { notFound } from "./middleware/notFound";
 import { requestLogger } from "./middleware/requestLogger";
+import { authenticate, requireCsrf } from "./middleware/authentication";
 import { apiRouter } from "./routes";
+import { authRouter } from "./routes/auth.routes";
+import { healthRouter } from "./routes/health.routes";
 import { webhookRouter } from "./routes/webhook.routes";
+import { getClientUrl, getTrustedProxyHops } from "./config/env";
 
 export function createApp(): express.Express {
   const app = express();
 
   app.disable("x-powered-by");
+  app.set("trust proxy", getTrustedProxyHops());
+  app.use(requestLogger);
 
   app.use(
     cors({
-      origin: process.env.CLIENT_URL || "http://localhost:5173",
+      origin: getClientUrl(),
+      credentials: true,
+      exposedHeaders: ["X-Request-ID"],
     }),
   );
 
@@ -25,10 +33,16 @@ export function createApp(): express.Express {
     express.raw({ type: "application/json", limit: "100kb" }),
     webhookRouter,
   );
-
   app.use(express.json({ limit: "100kb" }));
-  app.use(requestLogger);
-  app.use("/api", apiRouter);
+  app.use("/api/health", healthRouter);
+  app.use("/api/auth", authRouter);
+  app.use("/api", authenticate, (req, res, next) => {
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
+      requireCsrf(req, res, next);
+      return;
+    }
+    next();
+  }, apiRouter);
   app.use(notFound);
   app.use(errorHandler);
 

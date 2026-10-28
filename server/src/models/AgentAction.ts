@@ -47,6 +47,15 @@ const policyResultSchema = new Schema<PolicyResult>(
   { _id: false }
 );
 
+const approvalSchema = new Schema(
+  {
+    approvedBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    approverEmail: { type: String, required: true, trim: true },
+    approvedAt: { type: Date, required: true },
+  },
+  { _id: false },
+);
+
 const agentActionSchema = new Schema<AgentAction>(
   {
     conversationId: { type: String, required: true, trim: true, index: true },
@@ -60,6 +69,7 @@ const agentActionSchema = new Schema<AgentAction>(
     discountPercent: { type: Number, min: 0, max: 100 },
     approvalStatus: { type: String, required: true, enum: APPROVAL_STATUSES, default: "PENDING" },
     executionStatus: { type: String, required: true, enum: EXECUTION_STATUSES, default: "NOT_STARTED" },
+    approval: { type: approvalSchema },
   },
   { timestamps: true }
 );

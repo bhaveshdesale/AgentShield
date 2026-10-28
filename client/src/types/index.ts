@@ -114,6 +114,8 @@ export interface DashboardStats {
 export interface AuditLogEntry {
   _id: string;
   actionId?: string;
+  actorId?: string;
+  actorEmail?: string;
   event: string;
   details: Record<string, unknown>;
   timestamp: string;

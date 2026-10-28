@@ -4,13 +4,14 @@ import {
   getPaymentHistory,
   getPaymentStatus,
 } from "../controllers/reconcile.controller";
+import { requireRoles } from "../middleware/authentication";
 
 const paymentRouter = Router();
 
 /**
  * Create a Razorpay payment link.
  */
-paymentRouter.post("/create", createPayment);
+paymentRouter.post("/create", requireRoles("admin", "approver"), createPayment);
 
 /**
  * Get persisted payment/order history.

@@ -1,4 +1,12 @@
 import mongoose from "mongoose";
+import { AgentActionModel } from "../models/AgentAction";
+import { AuditLogModel } from "../models/AuditLog";
+import { MerchantModel } from "../models/Merchant";
+import { OrderModel } from "../models/Order";
+import { ProductModel } from "../models/Product";
+import { UserModel } from "../models/User";
+import { UserSessionModel } from "../models/UserSession";
+import { WebhookEventModel } from "../models/WebhookEvent";
 import { logger } from "../utils/logger";
 
 const MONGO_STATES = ["disconnected", "connected", "connecting", "disconnecting"] as const;
@@ -17,6 +25,16 @@ export async function connectDatabase(uri: string): Promise<void> {
   try {
     mongoose.set("strictQuery", true);
     await mongoose.connect(uri);
+    await Promise.all([
+      AgentActionModel.init(),
+      AuditLogModel.init(),
+      MerchantModel.init(),
+      OrderModel.init(),
+      ProductModel.init(),
+      UserModel.init(),
+      UserSessionModel.init(),
+      WebhookEventModel.init(),
+    ]);
     logger.info("MongoDB connected");
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown MongoDB error";

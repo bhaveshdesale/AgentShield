@@ -71,10 +71,17 @@ export default function AgentWorkspace() {
     setBusy(true);
     setError("");
     try {
-      await apiApproveAction(action._id);
+      if (action.approvalRequired && action.approvalStatus !== "APPROVED") {
+        await apiApproveAction(action._id);
+        setAction((current) => current ? { ...current, approvalStatus: "APPROVED" } : current);
+      }
       const created = await apiCreatePayment(action._id);
       setPayment(created);
-      setAction((current) => current ? { ...current, approvalStatus: "APPROVED", executionStatus: "IN_PROGRESS" } : current);
+      setAction((current) => current ? {
+        ...current,
+        approvalStatus: current.approvalRequired ? "APPROVED" : "NOT_REQUIRED",
+        executionStatus: "IN_PROGRESS",
+      } : current);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Approval failed.");
     } finally {
@@ -180,7 +187,7 @@ export default function AgentWorkspace() {
             <>
               <div className={`decision-banner ${action.policyResult?.decision.toLowerCase()}`}>
                 <span className="decision-symbol">{action.policyResult?.decision === "ALLOW" ? "✓" : action.policyResult?.decision === "BLOCK" ? "×" : "!"}</span>
-                <div><strong>{action.policyResult?.decision === "ALLOW" ? "Allowed — approval required" : action.policyResult?.decision === "BLOCK" ? "Blocked by policy" : "Escalation required"}</strong><span>{action.policyResult?.reason}</span></div>
+                <div><strong>{action.policyResult?.decision === "ALLOW" ? action.approvalRequired ? "Allowed — approval required" : "Allowed — approval not required" : action.policyResult?.decision === "BLOCK" ? "Blocked by policy" : "Escalation required"}</strong><span>{action.policyResult?.reason}</span></div>
               </div>
 
               <div className="proposal-card">
@@ -208,7 +215,7 @@ export default function AgentWorkspace() {
                 </div>
               ) : action.policyResult?.decision === "ALLOW" ? (
                 <button className="approve-button" disabled={busy} onClick={() => void approve()}>
-                  {busy ? "Creating secure payment link…" : "Approve purchase"}
+                  {busy ? "Creating secure payment link…" : action.approvalRequired && action.approvalStatus !== "APPROVED" ? "Approve purchase" : "Create secure payment link"}
                   <Icon name="arrow" size={17} />
                 </button>
               ) : null}

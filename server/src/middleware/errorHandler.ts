@@ -17,22 +17,22 @@ export function errorHandler(
     };
 
     logger.warn("Request failed", {
+      requestId: req.requestId ?? "unknown",
       code: err.code,
       status: err.statusCode,
       method: req.method,
-      path: req.originalUrl,
+      path: req.path,
     });
 
     res.status(err.statusCode).json(body);
     return;
   }
 
-  const message = err instanceof Error ? err.message : "Unexpected server error";
-
   logger.error("Unhandled request error", {
+    requestId: req.requestId ?? "unknown",
     method: req.method,
-    path: req.originalUrl,
-    error: message,
+    path: req.path,
+    errorType: err instanceof Error ? err.name : "UnknownError",
   });
 
   const body: ApiErrorBody = {

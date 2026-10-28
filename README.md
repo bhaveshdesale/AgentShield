@@ -90,6 +90,7 @@ AgentShield validates every proposed financial action against deterministic rule
 - 🏷️ Discount validation
 - 🔐 Permission requirements
 - 👤 Human approval requirements
+- 🔐 Authenticated user sessions and role-based access
 - 🔁 Duplicate payment protection
 - 🧾 Server-authoritative order totals
 - 🔄 Payment reconciliation
@@ -192,6 +193,14 @@ Approved actions can create Razorpay Payment Links in Test Mode. AgentShield nev
 ### 🔄 Payment Reconciliation
 Payment state is reconciled against Razorpay so that redirect failures, delayed webhooks, or uncertain payment states do not silently produce incorrect local state.
 
+#### Webhook retries and recovery
+
+Verified webhook event IDs are stored durably before processing. Events move through `PENDING`, `PROCESSING`, `PROCESSED`, and `RETRYABLE_FAILURE`; a processing claim expires after 60 seconds so a later delivery can recover work abandoned by a crashed process. In-progress duplicates receive a retryable response, and payment events whose order is not yet available are not marked complete. Audit entries for a provider event are idempotent.
+
+Order updates use conditional state transitions: `PAID` can supersede `FAILED` or recovery states, while a late failure cannot move a paid order backwards. Reconciliation claims `UNKNOWN` orders and may reclaim `RECOVERING` claims after 120 seconds; it checks Razorpay before creating another payment link. This is recoverable, at-least-once processing, not a distributed exactly-once guarantee: the order, action, audit, and webhook records are separate MongoDB writes.
+
+The application initializes the unique webhook-event and idempotent-audit indexes at database connection time. Ensure the application can create/verify these indexes before deploying the new version. Historical webhook rows without retained payload data are treated as already processed and cannot be replayed automatically.
+
 ### 📋 Audit Trail
 Every important event is recorded throughout the lifecycle:
 
@@ -239,11 +248,11 @@ AgentShield/
 
 ### Prerequisites
 
-- Node.js 18+
-- npm
-- MongoDB / MongoDB Atlas
-- Razorpay Test Mode credentials
-- An LLM API key
+- Node.js 22 (used by CI and the Docker build stages; the backend manifest declares `>=18`)
+- npm (included with Node.js)
+- MongoDB 7.0 for local development, or Docker Desktop / Docker Engine with Compose v2
+- Razorpay Test Mode API credentials only if you want to make actual test-mode payment-link requests
+- An OpenAI-compatible LLM API key is optional; without one, the deterministic fallback agent is used
 
 ### 1. Clone the repository
 
@@ -252,68 +261,70 @@ git clone https://github.com/bhaveshdesale/AgentShield.git
 cd AgentShield
 ```
 
-### 2. Install backend dependencies
+### 2. Install dependencies
+
+```bash
+cd server && npm ci
+cd ../client && npm ci
+```
+
+In PowerShell, use `Set-Location server; npm ci`, then `Set-Location ..\client; npm ci`.
+
+### 3. Configure the backend
+
+Copy the example file and set `MONGODB_URI` to a local development database. The example uses port `5050`; if `PORT` is omitted, the application defaults to `5000`.
+
+```bash
+cp server/.env.example server/.env
+```
+
+PowerShell equivalent: `Copy-Item server\.env.example server\.env`.
+
+At minimum, configure `MONGODB_URI`. The example sets `CLIENT_URL=http://localhost:5173`, `PORT=5050`, and `RAZORPAY_MODE=test`; the Razorpay credential and webhook-secret fields are intentionally blank. Payment-link creation requires matching test API credentials. Webhook verification requires the test webhook secret. Keep credentials in the ignored local `.env`, never in source control.
+
+`LLM_API_KEY` is optional. When set, the backend uses an OpenAI-compatible chat-completions API; `LLM_BASE_URL` and `LLM_MODEL` can optionally override the default endpoint and model. The API key name is `LLM_API_KEY` (not `OPENAI_API_KEY`). If no LLM key is configured, the application uses its clearly identified deterministic fallback; this is useful for local setup and tests.
+
+### 4. Provision the first administrator
+
+From the server directory, run the interactive CLI:
 
 ```bash
 cd server
-npm install
+npm run provision-user
 ```
 
-Create a `.env` file in `server/` with your local configuration:
+PowerShell from the repository root: `Set-Location server; npm run provision-user`.
 
-```env
-PORT=5050
-MONGODB_URI=your_mongodb_connection_string
+Enter the email, select `admin`, and enter and confirm a password of 12–256 characters. Password entry is hidden and the CLI requires an interactive terminal. Repeat to create `approver` or `viewer` accounts. There is no public registration endpoint. Use a disposable local database for setup and do not share provisioned credentials.
 
-OPENAI_API_KEY=your_llm_api_key
+### 5. Seed the local demo catalog (optional)
 
-RAZORPAY_KEY_ID=your_razorpay_test_key_id
-RAZORPAY_KEY_SECRET=your_razorpay_test_key_secret
-```
-
-> ⚠️ Never commit `.env` files or API credentials to the repository.
-
-### 3. Seed the database
+The seed script creates a demo merchant and catalog, but first deletes **all merchant and product records** in the configured database. Run it only against a fresh, disposable local development database when you want the demo catalog; do not run it against shared or production data.
 
 ```bash
+cd server
 npm run seed
 ```
 
-### 4. Start the backend
+### 6. Start the backend
 
 ```bash
+cd server
 npm run dev
 ```
 
-The API will run on:
+The API listens on `http://localhost:5050` with the supplied example configuration. Check database readiness at `http://localhost:5050/api/health`; it returns `200` when MongoDB is connected and `503` otherwise.
 
-```text
-http://localhost:5050
-```
+### 7. Start the frontend
 
-Health check:
-
-```http
-GET /api/health
-```
-
-### 5. Start the frontend
-
-Open another terminal:
+In a second terminal:
 
 ```bash
 cd client
-npm install
 npm run dev
 ```
 
-The frontend will run on:
-
-```text
-http://localhost:5173
-```
-
-Open that URL in your browser.
+Open `http://localhost:5173`. Vite forwards `/api` requests to `http://localhost:5050`. For the Docker Compose setup, see [Docker Compose (local development)](#docker-compose-local-development) below.
 
 ---
 
@@ -354,6 +365,10 @@ unauthorized transactions.
 The backend exposes the application flow through the following endpoints:
 
 ```http
+POST   /api/auth/login
+GET    /api/auth/session
+POST   /api/auth/logout
+
 POST   /api/agent/chat
 
 GET    /api/products
@@ -376,31 +391,90 @@ POST   /api/simulation/run
 GET    /api/health
 ```
 
+The health endpoint and login are public. Application routes require an authenticated session; state-changing authenticated requests also require a CSRF token. The Razorpay webhook is unauthenticated at the session layer but requires a valid signature over the exact raw body and a mode-specific webhook secret.
+
 ---
 
 ## Testing
 
-Backend tests:
+Backend tests use a disposable MongoDB test database and dummy Razorpay credentials; provider requests in the automated tests are mocked. Do not use the persistent Compose database, real customer data, or live payment credentials. MongoDB must be running locally (or provide another disposable MongoDB test instance).
+
+PowerShell:
 
 ```bash
-cd server
+Set-Location server
+$env:NODE_ENV = "test"
+$env:MONGODB_TEST_URI = "mongodb://127.0.0.1:27017/agentshield_test"
+$env:MONGODB_URI = $env:MONGODB_TEST_URI
+$env:RAZORPAY_MODE = "test"
+$env:RAZORPAY_KEY_ID = "rzp_test_local_dummy"
+$env:RAZORPAY_KEY_SECRET = "local-dummy-api-secret"
+$env:RAZORPAY_TEST_WEBHOOK_SECRET = "local-dummy-webhook-secret"
+Remove-Item Env:LLM_API_KEY -ErrorAction SilentlyContinue
 npm test
 npm run typecheck
-```
-
-Frontend type checking:
-
-```bash
-cd client
-npm run typecheck
-```
-
-Production frontend build:
-
-```bash
-cd client
 npm run build
+npm audit --audit-level=low
 ```
+
+Portable shell equivalent (run from `server/`):
+
+```bash
+env -u LLM_API_KEY NODE_ENV=test \
+  MONGODB_TEST_URI=mongodb://127.0.0.1:27017/agentshield_test \
+  MONGODB_URI=mongodb://127.0.0.1:27017/agentshield_test \
+  RAZORPAY_MODE=test RAZORPAY_KEY_ID=rzp_test_local_dummy \
+  RAZORPAY_KEY_SECRET=local-dummy-api-secret \
+  RAZORPAY_TEST_WEBHOOK_SECRET=local-dummy-webhook-secret \
+  npm test
+```
+
+Frontend checks (run from `client/`):
+
+```bash
+npm ci
+npm run typecheck
+npm run build
+npm audit --audit-level=low
+```
+
+The local `.github/workflows/ci.yml` defines dependency audits (`npm audit --audit-level=low`), backend typecheck, production build and full test suite, plus frontend typecheck and production build, using Node.js 22, lockfile-based `npm ci`, and a disposable MongoDB service. However, that workflow is untracked in this worktree, and GitHub currently reports zero workflows and zero runs for this repository. These checks are therefore not remotely CI-verified; do not treat the local workflow definition as an enforced release gate.
+
+### Release readiness checklist
+
+The repository does not define release tags, package publishing, or production deployment. Use the repository-specific [release handoff checklist](./RELEASING.md) to review CI-equivalent checks, image limitations, deployment-only security and data-protection gates, and a payment-safe rollback plan. It distinguishes verified repository behavior from checks that require real deployment infrastructure; completing local tests alone does not establish production readiness.
+
+### Docker Compose (local development)
+
+Prerequisites: Docker Desktop (or Docker Engine) with the Docker Compose v2 plugin.
+
+Start the application and MongoDB:
+
+```bash
+docker compose up --build
+```
+
+Open the frontend at `http://localhost:8080`. The browser sends `/api` requests to that same origin; Nginx forwards them inside the Compose network to the backend. The browser does not need to resolve the Docker-only backend hostname. Compose configures one trusted proxy hop for client-IP rate limiting; the backend remains unpublished. API endpoints are available under `http://localhost:8080/api/` (for example, `/api/health`).
+
+Login throttling currently uses the default process-local memory store from `express-rate-limit`. The counter is effective within a single backend process but is not shared across replicas and resets when a process restarts. Configure a shared rate-limit store at the deployment layer before running multiple backend instances; no shared store is configured by this repository.
+
+Compose uses a persistent MongoDB volume and safe Razorpay test-mode dummy credentials by default. To use local Razorpay test credentials or an LLM key, set `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_TEST_WEBHOOK_SECRET`, or `LLM_API_KEY` in the shell or an ignored root `.env` file before starting. Never put live credentials in the local Compose configuration; Compose fixes `RAZORPAY_MODE` to `test`.
+
+View logs with `docker compose logs -f`; stop the stack with `docker compose down`. To erase the local MongoDB data and start fresh, run `docker compose down -v` **only after confirming you no longer need that data**—removing the named volume permanently deletes the stored database.
+
+For local diagnostics, check service state and readiness with:
+
+```bash
+docker compose ps
+curl -i http://localhost:8080/api/health
+docker compose logs --tail=100 backend mongo
+```
+
+The health endpoint returns `200` when MongoDB is connected and `503` otherwise. If the backend does not become healthy, inspect the backend and MongoDB logs for connection or index-initialization failures and verify MongoDB is healthy before restarting the backend with `docker compose restart backend`. Each HTTP response includes an `X-Request-ID`; use that value to find the corresponding backend request and error log entries. Shutdown signals are logged by the backend, which closes its HTTP server before disconnecting from MongoDB.
+
+Run tests from the host with `cd server && npm test`; they require `MONGODB_TEST_URI` pointed at a disposable test database and dummy Razorpay test-mode values. Do not point tests at the persistent Compose development database.
+
+This Compose file is for local development, not production. Its MongoDB service has no authentication and is only reachable on the internal Compose network. Production deployments must configure MongoDB authentication, TLS, backups, network access controls, and managed secrets separately. Serve the application behind HTTPS and configure the backend's production `CLIENT_URL` and explicit Razorpay live-mode settings only in an intentionally secured production environment. The backend waits for MongoDB, creates/verifies its model indexes before listening, reports database readiness through `/api/health`, and drains HTTP requests on `SIGTERM` before disconnecting.
 
 ---
 
@@ -422,6 +496,7 @@ AgentShield approaches this through policy enforcement, explicit approval, payme
 - AI-assisted product discovery
 - Structured action proposals
 - Deterministic policy validation
+- User authentication, sessions, CSRF, and role-based access
 - Human approval
 - Razorpay Test Mode payments
 - Payment reconciliation
@@ -431,7 +506,7 @@ AgentShield approaches this through policy enforcement, explicit approval, payme
 
 ### Intentionally out of scope
 - Production payment processing
-- User authentication system
+- Public self-service registration
 - Multi-tenant infrastructure
 - Automated refunds
 - Payouts
@@ -441,6 +516,8 @@ AgentShield approaches this through policy enforcement, explicit approval, payme
 - Kubernetes / microservice infrastructure
 
 The goal is to keep the prototype focused on the trust boundary between AI agents and financial execution.
+
+User login, eight-hour sessions, logout revocation, CSRF validation, role checks (`admin`, `approver`, `viewer`), and interactive account provisioning are implemented. Razorpay integration is configurable and supports guarded live-mode settings, but local development and automated tests use test-mode configuration and mocked provider calls. No production deployment or live payment operation is established by this repository.
 
 ---
 

@@ -9,12 +9,10 @@ export async function receiveRazorpayWebhook(req: Request, res: Response, next: 
   const rawBody = Buffer.isBuffer(req.body) ? req.body : undefined;
 
   try {
-    await recordAudit("WEBHOOK_RECEIVED", { hasEventId: eventId !== undefined }, null);
     if (!rawBody) {
       throw new AppError("Razorpay webhook requires a raw request body.", 400, "WEBHOOK_MALFORMED");
     }
     verifyRazorpaySignature(rawBody, signature);
-    await recordAudit("WEBHOOK_VERIFIED", { hasEventId: eventId !== undefined }, null);
     const result = await processRazorpayWebhook(rawBody, eventId);
     res.status(200).json({ success: true, ...result });
   } catch (error) {

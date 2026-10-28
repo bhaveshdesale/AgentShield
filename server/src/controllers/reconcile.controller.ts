@@ -65,7 +65,7 @@ export async function reconcilePaymentController(
 
 /**
  * Create a Razorpay TEST-MODE payment link
- * for an explicitly approved AgentShield action.
+ * for an AgentShield action that satisfies the current approval policy.
  */
 export async function createPayment(
   req: Request,
@@ -85,10 +85,14 @@ export async function createPayment(
         "INVALID_ACTION_ID"
       );
     }
+    if (!req.auth) {
+      throw new AppError("Authentication is required.", 401, "AUTHENTICATION_REQUIRED");
+    }
 
     const result =
       await createPaymentForApprovedAction({
         actionId,
+        actor: req.auth,
       });
 
     res.status(200).json(result);
@@ -145,10 +149,14 @@ export async function getPaymentStatus(
         "INVALID_ORDER_ID"
       );
     }
+    if (!req.auth) {
+      throw new AppError("Authentication is required.", 401, "AUTHENTICATION_REQUIRED");
+    }
 
     const result =
       await getPaymentStatusByOrderId({
         orderId,
+        refreshRemote: req.auth.role !== "viewer",
       });
 
     res.status(200).json(result);

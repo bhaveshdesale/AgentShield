@@ -52,7 +52,7 @@
     },
     {
       "key": "webhookSecret",
-      "value": "replace-with-RAZORPAY_WEBHOOK_SECRET"
+      "value": "replace-with-RAZORPAY_TEST_WEBHOOK_SECRET"
     }
   ],
   "item": [

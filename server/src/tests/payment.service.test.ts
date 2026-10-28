@@ -837,14 +837,27 @@ import { Types } from "mongoose";
 import {
   approveActionAndCreatePayment,
   createPaymentForApprovedAction,
+  createRazorpayPaymentLink,
+  getPaymentStatusByOrderId,
   reconcilePayment,
 } from "../services/payment.service";
 
 const TEST_DB_NAME = "agentshield_payment_test";
 
 const originalFetch = globalThis.fetch;
+const originalRazorpayEnv = {
+  NODE_ENV: process.env.NODE_ENV,
+  RAZORPAY_MODE: process.env.RAZORPAY_MODE,
+  RAZORPAY_KEY_ID: process.env.RAZORPAY_KEY_ID,
+  RAZORPAY_KEY_SECRET: process.env.RAZORPAY_KEY_SECRET,
+};
 
 let coffeeKitId = "";
+const testActor = {
+  id: "64b000000000000000000001",
+  email: "approver@example.test",
+  role: "admin" as const,
+};
 
 /**
  * Resolve a dedicated MongoDB database for this test suite.
@@ -870,6 +883,16 @@ function resolveTestUri(): string {
     /\/[^/?]*(\?.*)?$/,
     `/${TEST_DB_NAME}$1`,
   );
+}
+
+function restoreRazorpayEnv(): void {
+  for (const [name, value] of Object.entries(originalRazorpayEnv)) {
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
 }
 
 /**
@@ -974,6 +997,10 @@ function hasErrorMessage(
 
 describe("M5 approval and Razorpay execution", () => {
   before(async () => {
+    process.env.NODE_ENV = "test";
+    process.env.RAZORPAY_MODE = "test";
+    process.env.RAZORPAY_KEY_ID = "rzp_test_dummy_key_id";
+    process.env.RAZORPAY_KEY_SECRET = "dummy-test-api-secret";
     await connectDatabase(resolveTestUri());
   });
 
@@ -1015,6 +1042,169 @@ describe("M5 approval and Razorpay execution", () => {
   after(async () => {
     globalThis.fetch = originalFetch;
     await disconnectDatabase();
+    restoreRazorpayEnv();
+  });
+
+  it("uses configured test credentials for link creation and status reconciliation", async () => {
+    const requests: Array<{ url: string; authorization: string | undefined }> = [];
+    globalThis.fetch = async (input, init) => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      const headers = new Headers(init?.headers);
+      requests.push({ url, authorization: headers.get("Authorization") ?? undefined });
+      const payload = url.endsWith("/payment_links")
+        ? {
+            id: "plink_test_mode",
+            short_url: "https://rzp.test/plink_test_mode",
+            status: "created",
+          }
+        : {
+            id: "plink_test_mode",
+            short_url: "https://rzp.test/plink_test_mode",
+            reference_id: "mode-reconcile-001",
+            status: "created",
+          };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    const link = await createRazorpayPaymentLink({
+      amountInPaise: 10000,
+      referenceId: "mode-create-001",
+      description: "Test mode configuration check",
+    });
+    assert.equal(link.id, "plink_test_mode");
+
+    const order = await OrderModel.create({
+      items: [{ productId: new Types.ObjectId(coffeeKitId), quantity: 1, unitPriceInPaise: 179900 }],
+      amountInPaise: 179900,
+      currency: "INR",
+      status: "AWAITING_PAYMENT",
+      referenceId: "mode-reconcile-001",
+      razorpayPaymentLinkId: "plink_test_mode",
+      razorpayPaymentLinkUrl: "https://rzp.test/plink_test_mode",
+    });
+    const status = await getPaymentStatusByOrderId({
+      orderId: String(order._id),
+    });
+
+    assert.equal(status.razorpayStatus, "created");
+    assert.equal(requests.length, 2);
+    for (const request of requests) {
+      assert.match(request.url, /^https:\/\/api\.razorpay\.com\/v1\/payment_links/);
+      assert.ok(request.authorization?.startsWith("Basic "));
+      assert.equal(
+        Buffer.from(request.authorization!.slice("Basic ".length), "base64").toString("utf8"),
+        "rzp_test_dummy_key_id:dummy-test-api-secret",
+      );
+    }
+  });
+
+  it("reconciles provider status idempotently without regressing a paid order", async () => {
+    const referenceId = "status-reconcile-paid-001";
+    const action = await AgentActionModel.create({
+      conversationId: "status-reconcile-test",
+      referenceId,
+      action: "CREATE_PAYMENT",
+      proposal: {
+        action: "CREATE_PAYMENT",
+        items: [],
+        proposedAmountInPaise: 179900,
+        reason: "Reconciliation regression test",
+        requiresApproval: false,
+      },
+      reason: "Reconciliation regression test",
+      verifiedAmountInPaise: 179900,
+      approvalRequired: false,
+      approvalStatus: "NOT_REQUIRED",
+      executionStatus: "IN_PROGRESS",
+    });
+    const order = await OrderModel.create({
+      items: [{ productId: new Types.ObjectId(coffeeKitId), quantity: 1, unitPriceInPaise: 179900 }],
+      amountInPaise: 179900,
+      currency: "INR",
+      status: "AWAITING_PAYMENT",
+      referenceId,
+      razorpayPaymentLinkId: "plink_status_reconcile_001",
+      razorpayPaymentLinkUrl: "https://rzp.test/plink_status_reconcile_001",
+    });
+
+    let remoteStatus = "paid";
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          id: "plink_status_reconcile_001",
+          short_url: "https://rzp.test/plink_status_reconcile_001",
+          reference_id: referenceId,
+          status: remoteStatus,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+
+    const paid = await getPaymentStatusByOrderId({ orderId: String(order._id) });
+    assert.equal(paid.status, "PAID");
+    assert.equal((await AgentActionModel.findById(action._id))?.executionStatus, "SUCCEEDED");
+    assert.equal(
+      await AuditLogModel.countDocuments({
+        event: "ORDER_PAYMENT_CONFIRMED",
+        idempotencyKey: `reconcile:${String(order._id)}:PAID`,
+      }),
+      1,
+    );
+
+    remoteStatus = "failed";
+    const lateFailure = await getPaymentStatusByOrderId({ orderId: String(order._id) });
+    assert.equal(lateFailure.status, "PAID");
+    assert.equal((await AgentActionModel.findById(action._id))?.executionStatus, "SUCCEEDED");
+    assert.equal(await AuditLogModel.countDocuments({ event: "ORDER_PAYMENT_FAILED" }), 0);
+
+    remoteStatus = "paid";
+    await getPaymentStatusByOrderId({ orderId: String(order._id) });
+    assert.equal(
+      await AuditLogModel.countDocuments({
+        event: "ORDER_PAYMENT_CONFIRMED",
+        idempotencyKey: `reconcile:${String(order._id)}:PAID`,
+      }),
+      1,
+    );
+  });
+
+  it("ignores unknown provider statuses and leaves local state unchanged on lookup errors", async () => {
+    const order = await OrderModel.create({
+      items: [{ productId: new Types.ObjectId(coffeeKitId), quantity: 1, unitPriceInPaise: 179900 }],
+      amountInPaise: 179900,
+      currency: "INR",
+      status: "AWAITING_PAYMENT",
+      referenceId: "status-reconcile-unknown-002",
+      razorpayPaymentLinkId: "plink_status_reconcile_002",
+      razorpayPaymentLinkUrl: "https://rzp.test/plink_status_reconcile_002",
+    });
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          id: "plink_status_reconcile_002",
+          reference_id: "status-reconcile-unknown-002",
+          status: "pending_review",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+
+    const unknown = await getPaymentStatusByOrderId({ orderId: String(order._id) });
+    assert.equal(unknown.status, "AWAITING_PAYMENT");
+    assert.equal(await AuditLogModel.countDocuments({ event: "ORDER_PAYMENT_CONFIRMED" }), 0);
+    assert.equal(await AuditLogModel.countDocuments({ event: "ORDER_PAYMENT_FAILED" }), 0);
+
+    globalThis.fetch = async () => {
+      throw new Error("simulated Razorpay lookup failure");
+    };
+    await assert.rejects(() =>
+      getPaymentStatusByOrderId({ orderId: String(order._id) }),
+    );
+    assert.equal(
+      (await OrderModel.findById(order._id))?.status,
+      "AWAITING_PAYMENT",
+    );
   });
 
   it(
@@ -1099,6 +1289,11 @@ describe("M5 approval and Razorpay execution", () => {
       const req = {
         body: {
           actionId,
+        },
+        auth: {
+          ...testActor,
+          sessionId: "test-session",
+          csrfToken: "test-csrf-token",
         },
       } as Request;
 
@@ -1185,12 +1380,9 @@ describe("M5 approval and Razorpay execution", () => {
   () =>
     createPaymentForApprovedAction({
       actionId,
-      credentials: {
-        keyId: "test_id",
-        keySecret: "test_secret",
-      },
+      actor: testActor,
     }),
-  /Action must be explicitly approved before payment creation/,
+  /requires human approval before payment creation/,
 );
 
       const action =
@@ -1288,6 +1480,11 @@ describe("M5 approval and Razorpay execution", () => {
         body: {
           actionId,
         },
+        auth: {
+          ...testActor,
+          sessionId: "test-session",
+          csrfToken: "test-csrf-token",
+        },
       } as Request;
 
       const res = {
@@ -1347,11 +1544,7 @@ describe("M5 approval and Razorpay execution", () => {
       const payment =
         await createPaymentForApprovedAction({
           actionId,
-
-          credentials: {
-            keyId: "test_id",
-            keySecret: "test_secret",
-          },
+          actor: testActor,
         });
 
       assert.equal(
@@ -1443,6 +1636,7 @@ describe("M5 approval and Razorpay execution", () => {
           approveActionAndCreatePayment({
             actionId:
               "507f1f77bcf86cd799439011",
+            actor: testActor,
           }),
 
         hasErrorMessage(/not found/i),
@@ -1467,6 +1661,7 @@ describe("M5 approval and Razorpay execution", () => {
         () =>
           approveActionAndCreatePayment({
             actionId,
+            actor: testActor,
           }),
 
         hasErrorMessage(
@@ -1510,11 +1705,7 @@ describe("M5 approval and Razorpay execution", () => {
       const approved =
         await approveActionAndCreatePayment({
           actionId,
-
-          credentials: {
-            keyId: "test_id",
-            keySecret: "test_secret",
-          },
+          actor: testActor,
         });
 
       const order =
@@ -1549,11 +1740,7 @@ describe("M5 approval and Razorpay execution", () => {
         () =>
           approveActionAndCreatePayment({
             actionId,
-
-            credentials: {
-              keyId: "test_id",
-              keySecret: "test_secret",
-            },
+            actor: testActor,
           }),
       );
 
@@ -1639,11 +1826,7 @@ describe("M5 approval and Razorpay execution", () => {
       const approved =
         await approveActionAndCreatePayment({
           actionId,
-
-          credentials: {
-            keyId: "test_id",
-            keySecret: "test_secret",
-          },
+          actor: testActor,
         });
 
       assert.equal(
@@ -1698,11 +1881,7 @@ describe("M5 approval and Razorpay execution", () => {
         () =>
           approveActionAndCreatePayment({
             actionId,
-
-            credentials: {
-              keyId: "test_id",
-              keySecret: "test_secret",
-            },
+            actor: testActor,
           }),
       );
 
@@ -1825,11 +2004,7 @@ describe(
           () =>
             approveActionAndCreatePayment({
               actionId,
-
-              credentials: {
-                keyId: "test_id",
-                keySecret: "test_secret",
-              },
+              actor: testActor,
             }),
         );
 
@@ -1900,11 +2075,7 @@ describe(
           () =>
             approveActionAndCreatePayment({
               actionId,
-
-              credentials: {
-                keyId: "test_id",
-                keySecret: "test_secret",
-              },
+              actor: testActor,
             }),
         );
 
@@ -1991,11 +2162,6 @@ describe(
           await reconcilePayment({
             orderId:
               String(order!._id),
-
-            credentials: {
-              keyId: "test_id",
-              keySecret: "test_secret",
-            },
           });
 
         assert.equal(
@@ -2096,14 +2262,9 @@ describe(
           });
 
         const result =
-          await reconcilePayment({
+          await           reconcilePayment({
             orderId:
               String(order!._id),
-
-            credentials: {
-              keyId: "test_id",
-              keySecret: "test_secret",
-            },
           });
 
         assert.equal(
@@ -2177,11 +2338,6 @@ describe(
             reconcilePayment({
               orderId:
                 String(order!._id),
-
-              credentials: {
-                keyId: "test_id",
-                keySecret: "test_secret",
-              },
             }),
         );
 
@@ -2280,14 +2436,9 @@ describe(
           });
 
         const result =
-          await reconcilePayment({
+          await           reconcilePayment({
             orderId:
               String(order!._id),
-
-            credentials: {
-              keyId: "test_id",
-              keySecret: "test_secret",
-            },
           });
 
         assert.equal(
@@ -2382,13 +2533,8 @@ describe(
           String(order!._id);
 
         const first =
-          await reconcilePayment({
+          await           reconcilePayment({
             orderId,
-
-            credentials: {
-              keyId: "test_id",
-              keySecret: "test_secret",
-            },
           });
 
         assert.equal(
@@ -2400,16 +2546,120 @@ describe(
           () =>
             reconcilePayment({
               orderId,
-
-              credentials: {
-                keyId: "test_id",
-                keySecret: "test_secret",
-              },
             }),
 
           hasErrorMessage(
             /UNKNOWN state/i,
           ),
+        );
+      },
+    );
+
+    it(
+      "allows only one active recovery while provider reconciliation is pending",
+      async () => {
+        await OrderModel.create({
+          items: [
+            {
+              productId: new Types.ObjectId(coffeeKitId),
+              quantity: 1,
+              unitPriceInPaise: 179900,
+            },
+          ],
+          amountInPaise: 179900,
+          currency: "INR",
+          status: "UNKNOWN",
+          referenceId: "m7-active-recovery-013",
+          razorpayPaymentLinkId: "plink_active_recovery_013",
+          razorpayPaymentLinkUrl: "https://rzp.test/plink_active_recovery_013",
+        });
+
+        let providerLookupStarted!: () => void;
+        let completeProviderLookup!: () => void;
+        const lookupStarted = new Promise<void>((resolve) => {
+          providerLookupStarted = resolve;
+        });
+        const providerResponse = new Promise<void>((resolve) => {
+          completeProviderLookup = resolve;
+        });
+        globalThis.fetch = async () => {
+          providerLookupStarted();
+          await providerResponse;
+          return new Response(
+            JSON.stringify({
+              id: "plink_active_recovery_013",
+              short_url: "https://rzp.test/plink_active_recovery_013",
+              status: "created",
+            }),
+            { status: 200 },
+          );
+        };
+
+        const order = await OrderModel.findOne({
+          referenceId: "m7-active-recovery-013",
+        });
+        const orderId = String(order!._id);
+        const firstRecovery = reconcilePayment({ orderId });
+        await lookupStarted;
+
+        await assert.rejects(
+          () => reconcilePayment({ orderId }),
+          hasErrorMessage(/UNKNOWN state or stale RECOVERING claims/i),
+        );
+        assert.equal(
+          (await OrderModel.findById(orderId))?.status,
+          "RECOVERING",
+        );
+
+        completeProviderLookup();
+        assert.equal((await firstRecovery).status, "RECOVERED");
+      },
+    );
+
+    it(
+      "reclaims a recovery claim after its lease expires",
+      async () => {
+        await OrderModel.create({
+          items: [
+            {
+              productId: new Types.ObjectId(coffeeKitId),
+              quantity: 1,
+              unitPriceInPaise: 179900,
+            },
+          ],
+          amountInPaise: 179900,
+          currency: "INR",
+          status: "RECOVERING",
+          referenceId: "m7-stale-recovery-014",
+          razorpayPaymentLinkId: "plink_stale_recovery_014",
+          razorpayPaymentLinkUrl: "https://rzp.test/plink_stale_recovery_014",
+        });
+        const staleOrder = await OrderModel.findOne({
+          referenceId: "m7-stale-recovery-014",
+        });
+        await OrderModel.updateOne(
+          { _id: staleOrder!._id },
+          { $set: { updatedAt: new Date(Date.now() - 121_000) } },
+          { timestamps: false },
+        );
+
+        globalThis.fetch = async () =>
+          new Response(
+            JSON.stringify({
+              id: "plink_stale_recovery_014",
+              short_url: "https://rzp.test/plink_stale_recovery_014",
+              status: "created",
+            }),
+            { status: 200 },
+          );
+
+        const recovered = await reconcilePayment({
+          orderId: String(staleOrder!._id),
+        });
+        assert.equal(recovered.status, "RECOVERED");
+        assert.equal(
+          (await OrderModel.findById(staleOrder!._id))?.status,
+          "RECOVERED",
         );
       },
     );
@@ -2449,11 +2699,6 @@ describe(
             reconcilePayment({
               orderId:
                 String(order!._id),
-
-              credentials: {
-                keyId: "test_id",
-                keySecret: "test_secret",
-              },
             }),
 
           hasErrorMessage(
@@ -2519,11 +2764,6 @@ describe(
         await reconcilePayment({
           orderId:
             String(order!._id),
-
-          credentials: {
-            keyId: "test_id",
-            keySecret: "test_secret",
-          },
         });
 
         assert.ok(
@@ -2620,14 +2860,9 @@ describe(
           });
 
         const result =
-          await reconcilePayment({
+          await           reconcilePayment({
             orderId:
               String(order!._id),
-
-            credentials: {
-              keyId: "test_id",
-              keySecret: "test_secret",
-            },
           });
 
         assert.equal(
@@ -2644,6 +2879,78 @@ describe(
               99900,
           }),
         );
+      },
+    );
+
+    it(
+      "creates a payment without human approval when current policy does not require it",
+      async () => {
+        await MerchantModel.updateOne(
+          {},
+          { $set: { "policy.requireHumanApproval": false } },
+        );
+        let calls = 0;
+        globalThis.fetch = async () => {
+          calls += 1;
+          return new Response(
+            JSON.stringify({
+              id: "plink_no_approval",
+              short_url: "https://rzp.test/plink_no_approval",
+              status: "created",
+            }),
+            { status: 200 },
+          );
+        };
+
+        const validated = await validate(proposal("m8-no-approval-001"));
+        const actionId = (validated.body as { actionId: string }).actionId;
+        assert.equal((validated.body as { approvalRequired: boolean }).approvalRequired, false);
+        assert.equal(
+          (await AgentActionModel.findById(actionId))?.approvalStatus,
+          "NOT_REQUIRED",
+        );
+
+        const result = await createPaymentForApprovedAction({
+          actionId,
+          actor: testActor,
+        });
+        assert.equal(result.paymentLinkId, "plink_no_approval");
+        assert.equal(calls, 1);
+      },
+    );
+
+    it(
+      "honors a current policy change that removes the approval requirement",
+      async () => {
+        let calls = 0;
+        globalThis.fetch = async () => {
+          calls += 1;
+          return new Response(
+            JSON.stringify({
+              id: "plink_policy_changed",
+              short_url: "https://rzp.test/plink_policy_changed",
+              status: "created",
+            }),
+            { status: 200 },
+          );
+        };
+        const validated = await validate(proposal("m8-policy-change-002"));
+        const actionId = (validated.body as { actionId: string }).actionId;
+        assert.equal((validated.body as { approvalRequired: boolean }).approvalRequired, true);
+
+        await MerchantModel.updateOne(
+          {},
+          { $set: { "policy.requireHumanApproval": false } },
+        );
+        const result = await createPaymentForApprovedAction({
+          actionId,
+          actor: testActor,
+        });
+        const action = await AgentActionModel.findById(actionId);
+        assert.equal(result.paymentLinkId, "plink_policy_changed");
+        assert.equal(action?.approvalRequired, false);
+        assert.equal(action?.approvalStatus, "NOT_REQUIRED");
+        assert.equal(calls, 1);
       },
     );
   },

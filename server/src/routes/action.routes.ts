@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { approveAction, validateAction } from "../controllers/action.controller";
+import { requireRoles } from "../middleware/authentication";
 const actionRouter = Router();
-actionRouter.post("/validate", validateAction);
-actionRouter.post("/approve", approveAction);
+const requireApprover = requireRoles("admin", "approver");
+actionRouter.post("/validate", requireApprover, validateAction);
+actionRouter.post("/approve", requireApprover, approveAction);
 export { actionRouter };

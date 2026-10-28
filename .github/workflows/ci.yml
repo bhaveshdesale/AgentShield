@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      NODE_ENV: test
+      MONGODB_TEST_URI: mongodb://127.0.0.1:27017/agentshield_ci
+      MONGODB_URI: mongodb://127.0.0.1:27017/agentshield_ci
+      RAZORPAY_MODE: test
+      RAZORPAY_KEY_ID: rzp_test_ci_dummy_key
+      RAZORPAY_KEY_SECRET: ci-dummy-api-secret
+      RAZORPAY_TEST_WEBHOOK_SECRET: ci-dummy-webhook-secret
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --health-start-period 10s
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Audit backend dependencies
+        working-directory: server
+        run: npm audit --audit-level=low
+
+      - name: Typecheck backend
+        working-directory: server
+        run: npm run typecheck
+
+      - name: Build backend
+        working-directory: server
+        run: npm run build
+
+      - name: Test backend
+        working-directory: server
+        run: npm test
+
+      - name: Install frontend dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Audit frontend dependencies
+        working-directory: client
+        run: npm audit --audit-level=low
+
+      - name: Typecheck frontend
+        working-directory: client
+        run: npm run typecheck
+
+      - name: Build frontend
+        working-directory: client
+        run: npm run build

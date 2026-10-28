@@ -12,5 +12,5 @@ export function getHealth(_req: Request, res: Response): void {
     mongodb,
   };
 
-  res.status(200).json(body);
+  res.status(mongodb === "connected" ? 200 : 503).json(body);
 }

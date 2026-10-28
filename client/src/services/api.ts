@@ -229,6 +229,40 @@ import type {
 
 const API_BASE =
   import.meta.env.VITE_API_BASE_URL || "/api";
+let csrfToken: string | undefined;
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  role: "admin" | "approver" | "viewer";
+}
+
+export function setCsrfToken(token?: string) {
+  csrfToken = token;
+}
+
+export async function apiLogin(email: string, password: string) {
+  const result = await request<{ user: AuthUser; csrfToken: string; expiresAt: string }>(
+    "/auth/login",
+    { method: "POST", body: JSON.stringify({ email, password }) },
+  );
+  setCsrfToken(result.csrfToken);
+  return result;
+}
+
+export async function apiGetSession() {
+  const result = await request<{ user: AuthUser; csrfToken: string }>("/auth/session");
+  setCsrfToken(result.csrfToken);
+  return result;
+}
+
+export async function apiLogout() {
+  try {
+    await request<void>("/auth/logout", { method: "POST" });
+  } finally {
+    setCsrfToken(undefined);
+  }
+}
 
 /**
  * Generic API request helper.
@@ -242,8 +276,13 @@ async function request<T>(
   try {
     response = await fetch(`${API_BASE}${path}`, {
       ...init,
+      credentials: "include",
       headers: {
         "Content-Type": "application/json",
+        ...(init?.method && !["GET", "HEAD", "OPTIONS"].includes(init.method.toUpperCase()) &&
+        !path.startsWith("/auth/login") && csrfToken
+          ? { "X-CSRF-Token": csrfToken }
+          : {}),
         ...(init?.headers || {}),
       },
     });
@@ -258,6 +297,10 @@ async function request<T>(
     .catch(() => null);
 
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith("/auth/")) {
+      setCsrfToken(undefined);
+      window.dispatchEvent(new Event("agentshield:session-expired"));
+    }
     const message =
       body?.message || "Request failed.";
 

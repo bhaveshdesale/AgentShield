@@ -24,7 +24,7 @@ This collection tests only the API endpoints listed in `AGENTSHIELD_SRS.md`.
 4. Run `npm run seed`.
 5. Run `npm run dev`.
 6. Import `AgentShield_Backend_Test.postman_collection.json` into Postman.
-7. Set collection variable `webhookSecret` to the same value as `RAZORPAY_WEBHOOK_SECRET`.
+7. Set collection variable `webhookSecret` to the same value as `RAZORPAY_TEST_WEBHOOK_SECRET` when using `RAZORPAY_MODE=test`.
 8. For the real payment-link success path, configure Razorpay Test Mode credentials in the server `.env`.
 
 ## Run

@@ -166,7 +166,10 @@ export async function approveAction(req: Request, res: Response, next: NextFunct
     if (!actionId) {
       throw new AppError("actionId is required.", 400, "INVALID_ACTION_ID");
     }
-    const result = await approveActionService({ actionId });
+    if (!req.auth) {
+      throw new AppError("Authentication is required.", 401, "AUTHENTICATION_REQUIRED");
+    }
+    const result = await approveActionService({ actionId, actor: req.auth });
     res.status(200).json(result);
   } catch (error) {
     if (error instanceof mongoose.mongo.MongoServerError && error.code === 11000) {

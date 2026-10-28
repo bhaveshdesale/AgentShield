@@ -17,7 +17,7 @@ For **small fixes** (typos, minor bugs, small refactors), feel free to go straig
 
 ## Development Setup
 
-Follow the [Getting Started](./README.md#getting-started) section in the README to get the backend and frontend running locally.
+Follow the [Getting Started](./README.md#getting-started) section in the README. Use Node.js 22 (the version used in CI), install from each package lockfile with `npm ci`, and configure a disposable MongoDB database for backend tests. The README includes PowerShell and portable-shell commands for test credentials and database isolation.
 
 ## Workflow
 
@@ -28,17 +28,24 @@ Follow the [Getting Started](./README.md#getting-started) section in the README 
    ```
 3. **Make your changes.** Keep commits focused and descriptive.
 4. **Test your changes:**
+
+   Before running backend tests, set `NODE_ENV=test`, `MONGODB_TEST_URI` to a disposable database, and dummy Razorpay test credentials as shown in the [Testing section](./README.md#testing). Tests mock provider requests; never point them at production or the persistent local Compose database.
+
    ```bash
    # Backend
    cd server
+   npm ci
    npm test
    npm run typecheck
 
    # Frontend
-   cd client
+   cd ../client
+   npm ci
    npm run typecheck
    npm run build
    ```
+
+   For security-sensitive or workflow changes, also run both `npm audit --audit-level=low` commands and `docker compose config --quiet` from the repository root.
 5. **Commit and push:**
    ```bash
    git add .

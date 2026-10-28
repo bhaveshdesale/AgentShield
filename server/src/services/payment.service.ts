@@ -8,6 +8,7 @@
 // import { logger } from "../utils/logger";
 // import { evaluateAction } from "./policy.service";
 // import type { ActionProposalInput, AgentAction, Order, OrderStatus } from "../types/domain";
+import type { AuthenticatedUser } from "../types/auth";
 
 // /**
 //  * Razorpay TEST-MODE payment service + explicit approval flow.
@@ -930,6 +931,9 @@ import { AgentActionModel } from "../models/AgentAction";
 import { AppError } from "../utils/AppError";
 import { logger } from "../utils/logger";
 import { evaluateAction } from "./policy.service";
+import { recordIdempotentAudit, recordSecurityAudit } from "./audit.service";
+import { getRazorpayCredentials } from "../config/razorpay";
+import type { RazorpayCredentials } from "../config/razorpay";
 import type {
   ActionProposalInput,
   AgentAction,
@@ -948,11 +952,6 @@ import type {
  * - Client input can never supply amounts, Razorpay IDs or approval state.
  */
 
-export interface RazorpayCredentials {
-  keyId: string;
-  keySecret: string;
-}
-
 export interface RazorpayPaymentLink {
   id: string;
   short_url: string;
@@ -970,46 +969,23 @@ export interface ApprovalResult {
 
 const RAZORPAY_API_BASE = "https://api.razorpay.com/v1";
 const RAZORPAY_TIMEOUT_MS = 20_000;
+const RECOVERY_LEASE_MS = 120_000;
 
 /**
- * Reads TEST-MODE credentials from environment.
- * Never hardcoded and never exposed to the client.
+ * Reads validated credentials for the configured payment mode.
  */
-export function getRazorpayCredentials(): RazorpayCredentials {
-  const keyId = process.env.RAZORPAY_KEY_ID;
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
-
-  if (
-    keyId === undefined ||
-    keyId.trim() === "" ||
-    keySecret === undefined ||
-    keySecret.trim() === ""
-  ) {
-    throw new AppError(
-      "Razorpay test-mode credentials are not configured (RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET).",
-      503,
-      "RAZORPAY_NOT_CONFIGURED"
-    );
-  }
-
-  return {
-    keyId: keyId.trim(),
-    keySecret: keySecret.trim(),
-  };
-}
+export { getRazorpayCredentials };
 
 /**
- * Creates a Razorpay TEST-MODE Payment Link.
+ * Creates a Razorpay Payment Link in the validated configured mode.
  */
 export async function createRazorpayPaymentLink(options: {
   amountInPaise: number;
   referenceId: string;
   description: string;
   callbackUrl?: string;
-  credentials?: RazorpayCredentials;
 }): Promise<RazorpayPaymentLink> {
-  const credentials =
-    options.credentials ?? getRazorpayCredentials();
+  const credentials = getRazorpayCredentials();
 
   const referenceId = options.referenceId.trim();
 
@@ -1079,26 +1055,20 @@ export async function createRazorpayPaymentLink(options: {
     const bodyText = await response.text().catch(() => "");
 
     if (!response.ok) {
-      let detail = `Razorpay rejected the payment link request with status ${response.status}.`;
       let razorpayCode: string | undefined;
 
       try {
         const parsed = JSON.parse(bodyText) as {
           error?: {
             code?: string;
-            description?: string;
           };
         };
 
         if (parsed.error?.code) {
           razorpayCode = parsed.error.code;
         }
-
-        if (parsed.error?.description) {
-          detail = parsed.error.description;
-        }
       } catch {
-        // Keep generic detail if Razorpay returned non-JSON.
+        // The provider response body is not exposed to the caller.
       }
 
       logger.error("Razorpay Payment Link request failed", {
@@ -1108,7 +1078,7 @@ export async function createRazorpayPaymentLink(options: {
       });
 
       throw new AppError(
-        detail,
+        "Payment provider rejected the payment link request.",
         502,
         "RAZORPAY_ERROR"
       );
@@ -1172,13 +1142,20 @@ export async function recordAudit(
     string,
     string | number | boolean | undefined
   >,
-  actionId: string | null
+  actionId: string | null,
+  actor?: AuthenticatedUser,
 ): Promise<void> {
   await AuditLogModel.create({
     actionId:
       actionId === null
         ? undefined
         : new Types.ObjectId(actionId),
+    ...(actor
+      ? {
+          actorId: new Types.ObjectId(actor.id),
+          actorEmail: actor.email,
+        }
+      : {}),
     event,
     details,
     timestamp: new Date(),
@@ -1371,7 +1348,9 @@ function buildPersistedProposal(
  * merchant policy and CURRENT catalog.
  */
 async function revalidateAction(
-  action: HydratedDocument<AgentAction>
+  action: HydratedDocument<AgentAction>,
+  actor?: AuthenticatedUser,
+  options: { requireApproval?: boolean } = {},
 ) {
   const merchant = await MerchantModel.findOne().sort({
     createdAt: 1,
@@ -1415,7 +1394,8 @@ async function revalidateAction(
         verifiedAmountInPaise:
           result.verifiedAmountInPaise,
       },
-      String(action._id)
+      String(action._id),
+      actor,
     );
 
     throw new AppError(
@@ -1426,16 +1406,26 @@ async function revalidateAction(
   }
 
   if (!result.approvalRequired) {
+    action.approvalRequired = false;
     action.approvalStatus = "NOT_REQUIRED";
     await action.save();
-
-    throw new AppError(
-      "This action no longer requires explicit approval.",
-      409,
-      "APPROVAL_NOT_REQUIRED"
-    );
+    return result;
   }
 
+  action.approvalRequired = true;
+  if (
+    options.requireApproval &&
+    (action.approvalStatus !== "APPROVED" || !action.approval?.approvedBy)
+  ) {
+    action.approvalStatus = "PENDING";
+    await action.save();
+    throw new AppError(
+      "Current merchant policy requires human approval before payment creation.",
+      409,
+      "APPROVAL_REQUIRED",
+    );
+  }
+  await action.save();
   return result;
 }
 
@@ -1454,12 +1444,23 @@ export interface ActionApprovalResult {
 export async function approveAction(
   options: {
     actionId: string;
+    actor: AuthenticatedUser;
   }
 ): Promise<ActionApprovalResult> {
+  const deny = async (reason: string, statusCode: number, code: string): Promise<never> => {
+    await recordSecurityAudit(
+      "ACTION_APPROVAL_DENIED",
+      { outcome: "DENIED", actionId: options.actionId, reason: code },
+      options.actor,
+      Types.ObjectId.isValid(options.actionId) ? options.actionId : undefined,
+    );
+    throw new AppError(reason, statusCode, code);
+  };
+
   if (
     !Types.ObjectId.isValid(options.actionId)
   ) {
-    throw new AppError(
+    return deny(
       "Invalid action ID.",
       400,
       "INVALID_ACTION_ID"
@@ -1472,7 +1473,7 @@ export async function approveAction(
     );
 
   if (!action) {
-    throw new AppError(
+    return deny(
       "Agent action was not found.",
       404,
       "ACTION_NOT_FOUND"
@@ -1483,10 +1484,18 @@ export async function approveAction(
     action.action !== "CREATE_PAYMENT" ||
     action.policyResult?.decision !== "ALLOW"
   ) {
-    throw new AppError(
+    return deny(
       "Only policy-allowed payment actions can be approved.",
       409,
       "ACTION_NOT_ALLOWED"
+    );
+  }
+
+  if (!action.approvalRequired) {
+    return deny(
+      "This action does not require human approval.",
+      409,
+      "APPROVAL_NOT_REQUIRED",
     );
   }
 
@@ -1494,15 +1503,36 @@ export async function approveAction(
     action.approvalStatus !== "PENDING" ||
     action.executionStatus !== "NOT_STARTED"
   ) {
-    throw new AppError(
+    return deny(
       "This action has already been approved or processed.",
       409,
       "ACTION_ALREADY_PROCESSED"
     );
   }
 
-  const reevaluation =
-    await revalidateAction(action);
+  let reevaluation: Awaited<ReturnType<typeof revalidateAction>>;
+  try {
+    reevaluation = await revalidateAction(action, options.actor);
+  } catch (error) {
+    await recordSecurityAudit(
+      "ACTION_APPROVAL_DENIED",
+      {
+        outcome: "DENIED",
+        actionId: options.actionId,
+        reason: error instanceof AppError ? error.code : "REVALIDATION_FAILED",
+      },
+      options.actor,
+      options.actionId,
+    );
+    throw error;
+  }
+  if (!reevaluation.approvalRequired) {
+    return deny(
+      "Current merchant policy does not require human approval for this action.",
+      409,
+      "APPROVAL_NOT_REQUIRED",
+    );
+  }
 
   const claimedAction =
     await AgentActionModel.findOneAndUpdate(
@@ -1515,6 +1545,11 @@ export async function approveAction(
         $set: {
           approvalStatus: "APPROVED",
           executionStatus: "NOT_STARTED",
+            approval: {
+              approvedBy: new Types.ObjectId(options.actor.id),
+              approverEmail: options.actor.email,
+              approvedAt: new Date(),
+            },
 
           policyResult: {
             decision: reevaluation.decision,
@@ -1531,21 +1566,54 @@ export async function approveAction(
     );
 
   if (!claimedAction) {
-    throw new AppError(
+    return deny(
       "This action is already being processed.",
       409,
       "ACTION_ALREADY_PROCESSED"
     );
   }
 
-  await recordAudit(
-    "ACTION_APPROVED",
-    {
-      approvalState: "APPROVED",
-      executionState: "NOT_STARTED",
-    },
-    String(claimedAction._id)
-  );
+  try {
+    await recordAudit(
+      "ACTION_APPROVED",
+      {
+        approvalState: "APPROVED",
+        executionState: "NOT_STARTED",
+      },
+      String(claimedAction._id),
+      options.actor,
+    );
+  } catch (error) {
+    try {
+      const rollback = await AgentActionModel.updateOne(
+        {
+          _id: claimedAction._id,
+          approvalStatus: "APPROVED",
+          executionStatus: "NOT_STARTED",
+          "approval.approvedBy": new Types.ObjectId(options.actor.id),
+        },
+        {
+          $set: { approvalStatus: "PENDING" },
+          $unset: { approval: "" },
+        },
+      );
+      if (rollback.modifiedCount !== 1) {
+        logger.error("Approval audit failed and action rollback did not match", {
+          actionId: String(claimedAction._id),
+        });
+      }
+    } catch (rollbackError) {
+      logger.error("Approval audit and rollback failed", {
+        actionId: String(claimedAction._id),
+        auditError: error instanceof Error ? error.message : "Unknown audit error",
+        rollbackError:
+          rollbackError instanceof Error
+            ? rollbackError.message
+            : "Unknown rollback error",
+      });
+    }
+    throw error;
+  }
 
   return {
     success: true,
@@ -1556,14 +1624,14 @@ export async function approveAction(
 }
 
 /**
- * Executes an explicitly approved action.
+ * Executes an explicitly approved action or one that does not require approval.
  *
  * THIS is the only path that calls Razorpay.
  */
 export async function createPaymentForApprovedAction(
   options: {
     actionId: string;
-    credentials?: RazorpayCredentials;
+    actor: AuthenticatedUser;
   }
 ): Promise<ApprovalResult> {
   if (
@@ -1600,26 +1668,46 @@ export async function createPaymentForApprovedAction(
     );
   }
 
-  if (!action.approvalRequired) {
-    throw new AppError(
-      "This action does not require explicit approval.",
-      409,
-      "APPROVAL_NOT_REQUIRED"
-    );
-  }
-
-  if (action.approvalStatus !== "APPROVED") {
-    throw new AppError(
-      "Action must be explicitly approved before payment creation.",
-      409,
-      "APPROVAL_REQUIRED"
-    );
+  if (
+    action.approvalRequired &&
+    action.approvalStatus === "APPROVED" &&
+    action.approval?.approvedBy
+  ) {
+    const approvalAudit = await AuditLogModel.exists({
+      actionId: action._id,
+      actorId: action.approval.approvedBy,
+      event: "ACTION_APPROVED",
+    });
+    if (!approvalAudit) {
+      throw new AppError(
+        "Approval cannot be used until its audit record is persisted.",
+        503,
+        "APPROVAL_AUDIT_UNAVAILABLE",
+      );
+    }
   }
 
   /**
    * Recovery path for previously UNKNOWN executions.
    */
   if (action.executionStatus === "UNKNOWN") {
+    if (
+      action.approvalRequired &&
+      (action.approvalStatus !== "APPROVED" || !action.approval?.approvedBy)
+    ) {
+      throw new AppError(
+        "Action must be explicitly approved before payment recovery.",
+        409,
+        "APPROVAL_REQUIRED",
+      );
+    }
+    if (!action.approvalRequired && action.approvalStatus !== "NOT_REQUIRED") {
+      throw new AppError(
+        "Action approval state does not match the current merchant policy.",
+        409,
+        "APPROVAL_STATE_INVALID",
+      );
+    }
     const unknownOrder =
       await OrderModel.findOne({
         referenceId: action.referenceId,
@@ -1635,13 +1723,6 @@ export async function createPaymentForApprovedAction(
 
     return reconcilePayment({
       orderId: String(unknownOrder._id),
-
-      ...(options.credentials === undefined
-        ? {}
-        : {
-            credentials:
-              options.credentials,
-          }),
     }).then((result) => ({
       success: true as const,
       actionId: String(action._id),
@@ -1665,13 +1746,15 @@ export async function createPaymentForApprovedAction(
   }
 
   const reevaluation =
-    await revalidateAction(action);
+    await revalidateAction(action, options.actor, { requireApproval: true });
+
+  getRazorpayCredentials();
 
   const claimedAction =
     await AgentActionModel.findOneAndUpdate(
       {
         _id: action._id,
-        approvalStatus: "APPROVED",
+        approvalStatus: reevaluation.approvalRequired ? "APPROVED" : "NOT_REQUIRED",
         executionStatus: "NOT_STARTED",
       },
       {
@@ -1755,10 +1838,12 @@ export async function createPaymentForApprovedAction(
 
         executionState: "IN_PROGRESS",
       },
-      String(claimedAction._id)
+      String(claimedAction._id),
+      options.actor,
     );
 
     const frontendUrl = (
+      process.env.CLIENT_URL ||
       process.env.FRONTEND_URL ||
       "http://localhost:5173"
     ).replace(/\/$/, "");
@@ -1782,25 +1867,49 @@ export async function createPaymentForApprovedAction(
           `${frontendUrl}/payments/${String(
             order._id
           )}`,
-
-        ...(options.credentials === undefined
-          ? {}
-          : {
-              credentials:
-                options.credentials,
-            }),
       });
 
-    order.razorpayPaymentLinkId =
-      paymentLink.id;
-
-    order.razorpayPaymentLinkUrl =
-      paymentLink.short_url;
-
-    order.status =
-      "AWAITING_PAYMENT";
-
-    await order.save();
+    const awaitingOrder = await OrderModel.findOneAndUpdate(
+      { _id: order._id, status: "CREATED" },
+      {
+        $set: {
+          razorpayPaymentLinkId: paymentLink.id,
+          razorpayPaymentLinkUrl: paymentLink.short_url,
+          status: "AWAITING_PAYMENT",
+        },
+      },
+      { new: true },
+    );
+    if (awaitingOrder) {
+      order = awaitingOrder;
+    } else {
+      const currentOrder = await OrderModel.findById(order._id);
+      if (!currentOrder || currentOrder.status !== "PAID") {
+        throw new AppError(
+          "Payment state changed while creating the payment link.",
+          409,
+          "PAYMENT_STATE_CHANGED",
+        );
+      }
+      const linkedPaidOrder = await OrderModel.findOneAndUpdate(
+        { _id: currentOrder._id, status: "PAID" },
+        {
+          $set: {
+            razorpayPaymentLinkId: paymentLink.id,
+            razorpayPaymentLinkUrl: paymentLink.short_url,
+          },
+        },
+        { new: true },
+      );
+      if (!linkedPaidOrder) {
+        throw new AppError(
+          "Payment state changed while storing the payment link.",
+          409,
+          "PAYMENT_STATE_CHANGED",
+        );
+      }
+      order = linkedPaidOrder;
+    }
 
     claimedAction.executionStatus =
       "SUCCEEDED";
@@ -1815,7 +1924,8 @@ export async function createPaymentForApprovedAction(
 
         executionState: "SUCCEEDED",
       },
-      String(claimedAction._id)
+      String(claimedAction._id),
+      options.actor,
     );
 
     return {
@@ -1839,14 +1949,16 @@ export async function createPaymentForApprovedAction(
       error.code === "RAZORPAY_ERROR"
     ) {
       if (order) {
-        order.status = "FAILED";
-        await order.save();
+        await OrderModel.findOneAndUpdate(
+          { _id: order._id, status: { $in: ["CREATED", "AWAITING_PAYMENT"] } },
+          { $set: { status: "FAILED" } },
+        );
       }
 
-      claimedAction.executionStatus =
-        "FAILED";
-
-      await claimedAction.save();
+      await AgentActionModel.updateOne(
+        { _id: claimedAction._id, executionStatus: "IN_PROGRESS" },
+        { $set: { executionStatus: "FAILED" } },
+      );
 
       await recordAudit(
         "PAYMENT_EXECUTION_FAILED",
@@ -1854,7 +1966,8 @@ export async function createPaymentForApprovedAction(
           executionState: "FAILED",
           errorCategory: error.code,
         },
-        String(claimedAction._id)
+        String(claimedAction._id),
+        options.actor,
       );
 
       throw error;
@@ -1868,14 +1981,16 @@ export async function createPaymentForApprovedAction(
      * required.
      */
     if (order) {
-      order.status = "UNKNOWN";
-      await order.save();
+      await OrderModel.findOneAndUpdate(
+        { _id: order._id, status: { $in: ["CREATED", "AWAITING_PAYMENT"] } },
+        { $set: { status: "UNKNOWN" } },
+      );
     }
 
-    claimedAction.executionStatus =
-      "UNKNOWN";
-
-    await claimedAction.save();
+    await AgentActionModel.updateOne(
+      { _id: claimedAction._id, executionStatus: "IN_PROGRESS" },
+      { $set: { executionStatus: "UNKNOWN" } },
+    );
 
     await recordAudit(
       "PAYMENT_EXECUTION_UNKNOWN",
@@ -1887,7 +2002,8 @@ export async function createPaymentForApprovedAction(
             ? error.message
             : "PAYMENT_EXECUTION_UNKNOWN",
       },
-      String(claimedAction._id)
+      String(claimedAction._id),
+      options.actor,
     );
 
     throw error;
@@ -1901,11 +2017,12 @@ export async function createPaymentForApprovedAction(
 export async function approveActionAndCreatePayment(
   options: {
     actionId: string;
-    credentials?: RazorpayCredentials;
+    actor: AuthenticatedUser;
   }
 ): Promise<ApprovalResult> {
   await approveAction({
     actionId: options.actionId,
+    actor: options.actor,
   });
 
   return createPaymentForApprovedAction(
@@ -1931,12 +2048,9 @@ export async function lookupRazorpayPaymentLink(
   options: {
     paymentLinkId?: string;
     referenceId?: string;
-    credentials?: RazorpayCredentials;
   }
 ): Promise<RazorpayPaymentLinkDetail | null> {
-  const credentials =
-    options.credentials ??
-    getRazorpayCredentials();
+  const credentials = getRazorpayCredentials();
 
   if (
     options.paymentLinkId &&
@@ -1996,31 +2110,10 @@ async function lookupPaymentLinkById(
     }
 
     if (!response.ok) {
-      let detail = `Razorpay lookup failed with status ${response.status}.`;
-
-      try {
-        const bodyText =
-          await response.text();
-
-        const parsed =
-          JSON.parse(bodyText) as {
-            error?: {
-              description?: string;
-            };
-          };
-
-        if (
-          parsed.error?.description
-        ) {
-          detail =
-            parsed.error.description;
-        }
-      } catch {
-        // Keep generic detail.
-      }
+      await response.text().catch(() => "");
 
       throw new AppError(
-        detail,
+        "Payment provider lookup failed.",
         502,
         "RAZORPAY_ERROR"
       );
@@ -2095,31 +2188,10 @@ async function lookupPaymentLinkByReference(
     );
 
     if (!response.ok) {
-      let detail = `Razorpay lookup failed with status ${response.status}.`;
-
-      try {
-        const bodyText =
-          await response.text();
-
-        const parsed =
-          JSON.parse(bodyText) as {
-            error?: {
-              description?: string;
-            };
-          };
-
-        if (
-          parsed.error?.description
-        ) {
-          detail =
-            parsed.error.description;
-        }
-      } catch {
-        // Keep generic detail.
-      }
+      await response.text().catch(() => "");
 
       throw new AppError(
-        detail,
+        "Payment provider lookup failed.",
         502,
         "RAZORPAY_ERROR"
       );
@@ -2302,7 +2374,7 @@ export async function getPaymentHistoryFromDatabase(): Promise<
 export async function getPaymentStatusByOrderId(
   options: {
     orderId: string;
-    credentials?: RazorpayCredentials;
+    refreshRemote?: boolean;
   }
 ): Promise<{
   orderId: string;
@@ -2343,13 +2415,9 @@ export async function getPaymentStatusByOrderId(
     | undefined;
 
   if (
-    order.razorpayPaymentLinkId ||
-    order.referenceId
+    options.refreshRemote !== false &&
+    (order.razorpayPaymentLinkId || order.referenceId)
   ) {
-    const credentials =
-      options.credentials ??
-      getRazorpayCredentials();
-
     const remote =
       await lookupRazorpayPaymentLink({
         ...(order.razorpayPaymentLinkId
@@ -2361,32 +2429,61 @@ export async function getPaymentStatusByOrderId(
 
         referenceId:
           order.referenceId,
-
-        credentials,
       });
 
     if (remote) {
       razorpayStatus =
         remote.status;
 
-      if (
-        (remote.status === "paid" ||
-          remote.status ===
-            "captured") &&
-        order.status ===
-          "AWAITING_PAYMENT"
-      ) {
-        order.status = "PAID";
-        await order.save();
-      } else if (
-        (remote.status === "expired" ||
-          remote.status ===
-            "failed") &&
-        order.status ===
-          "AWAITING_PAYMENT"
-      ) {
-        order.status = "FAILED";
-        await order.save();
+      const targetStatus =
+        remote.status === "paid" || remote.status === "captured"
+          ? "PAID"
+          : remote.status === "expired" || remote.status === "failed"
+            ? "FAILED"
+            : undefined;
+      if (targetStatus) {
+        const allowedPriorStates =
+          targetStatus === "PAID"
+            ? ["CREATED", "AWAITING_PAYMENT", "FAILED", "RECOVERED", "RECOVERING"]
+            : ["CREATED", "AWAITING_PAYMENT"];
+        const updatedOrder = await OrderModel.findOneAndUpdate(
+          {
+            _id: order._id,
+            status: { $in: allowedPriorStates },
+          },
+          { $set: { status: targetStatus } },
+          { new: true },
+        );
+        const currentOrder = updatedOrder ?? await OrderModel.findById(order._id);
+        if (!currentOrder) {
+          throw new AppError("Order disappeared during payment reconciliation.", 503, "ORDER_NOT_FOUND");
+        }
+        order.status = currentOrder.status;
+        if (currentOrder.status === targetStatus) {
+          const action = await AgentActionModel.findOne({
+            referenceId: order.referenceId,
+          }).select("_id");
+          await AgentActionModel.updateOne(
+            targetStatus === "PAID"
+              ? { referenceId: order.referenceId, executionStatus: { $ne: "SUCCEEDED" } }
+              : {
+                  referenceId: order.referenceId,
+                  executionStatus: { $in: ["IN_PROGRESS", "UNKNOWN", "RECOVERING"] },
+                },
+            { $set: { executionStatus: targetStatus === "PAID" ? "SUCCEEDED" : "FAILED" } },
+          );
+          await recordIdempotentAudit(
+            targetStatus === "PAID" ? "ORDER_PAYMENT_CONFIRMED" : "ORDER_PAYMENT_FAILED",
+            {
+              provider: "razorpay",
+              providerStatus: remote.status,
+              orderStatus: targetStatus,
+              razorpayIdentifier: order.razorpayPaymentLinkId ?? "",
+            },
+            `reconcile:${String(order._id)}:${targetStatus}`,
+            action ? String(action._id) : undefined,
+          );
+        }
       }
     }
   }
@@ -2437,7 +2534,6 @@ export async function getPaymentStatusByOrderId(
 export async function reconcilePayment(
   options: {
     orderId: string;
-    credentials?: RazorpayCredentials;
   }
 ): Promise<{
   orderId: string;
@@ -2470,9 +2566,15 @@ export async function reconcilePayment(
     );
   }
 
-  if (order.status !== "UNKNOWN") {
+  if (
+    order.status !== "UNKNOWN" &&
+    !(
+      order.status === "RECOVERING" &&
+      order.updatedAt.getTime() <= Date.now() - RECOVERY_LEASE_MS
+    )
+  ) {
     throw new AppError(
-      "Only orders in UNKNOWN state can be reconciled.",
+      "Only orders in UNKNOWN state or stale RECOVERING claims can be reconciled.",
       409,
       "ORDER_NOT_UNKNOWN"
     );
@@ -2488,20 +2590,15 @@ export async function reconcilePayment(
     ? String(action._id)
     : null;
 
-  await recordAudit(
-    "RECOVERY_STARTED",
-    {
-      orderId:
-        String(order._id),
-    },
-    actionId
-  );
-
+  const staleRecoveryCutoff = new Date(Date.now() - RECOVERY_LEASE_MS);
   const claimed =
     await OrderModel.findOneAndUpdate(
       {
         _id: order._id,
-        status: "UNKNOWN",
+        $or: [
+          { status: "UNKNOWN" },
+          { status: "RECOVERING", updatedAt: { $lte: staleRecoveryCutoff } },
+        ],
       },
       {
         $set: {
@@ -2520,6 +2617,13 @@ export async function reconcilePayment(
       "ORDER_ALREADY_RECOVERING"
     );
   }
+
+  await recordIdempotentAudit(
+    "RECOVERY_STARTED",
+    { orderId: String(order._id) },
+    `recovery:${String(order._id)}:${claimed.updatedAt.getTime()}`,
+    actionId ?? undefined,
+  );
 
   try {
     /**
@@ -2571,14 +2675,6 @@ export async function reconcilePayment(
 
           referenceId:
             order.referenceId,
-
-          ...(options.credentials ===
-          undefined
-            ? {}
-            : {
-                credentials:
-                  options.credentials,
-              }),
         });
     } catch (lookupError) {
       lookupFailed = true;
@@ -2594,6 +2690,12 @@ export async function reconcilePayment(
         },
         actionId
       );
+      if (
+        lookupError instanceof AppError &&
+        lookupError.code === "RAZORPAY_CONFIGURATION_INVALID"
+      ) {
+        throw lookupError;
+      }
     }
 
     /**
@@ -2601,8 +2703,8 @@ export async function reconcilePayment(
      * stay UNKNOWN. Never blindly retry.
      */
     if (lookupFailed) {
-      await OrderModel.findByIdAndUpdate(
-        order._id,
+      const resetOrder = await OrderModel.findOneAndUpdate(
+        { _id: order._id, status: "RECOVERING" },
         {
           $set: {
             status: "UNKNOWN",
@@ -2610,11 +2712,14 @@ export async function reconcilePayment(
         }
       );
 
-      if (action) {
-        action.executionStatus =
-          "UNKNOWN";
-
-        await action.save();
+      if (action && resetOrder) {
+        await AgentActionModel.updateOne(
+          {
+            _id: action._id,
+            executionStatus: { $in: ["RECOVERING", "UNKNOWN"] },
+          },
+          { $set: { executionStatus: "UNKNOWN" } },
+        );
       }
 
       throw new AppError(
@@ -2708,14 +2813,6 @@ export async function reconcilePayment(
               `${frontendUrl}/payments/${String(
                 order._id
               )}`,
-
-            ...(options.credentials ===
-            undefined
-              ? {}
-              : {
-                  credentials:
-                    options.credentials,
-                }),
           });
 
         paymentLinkId =
@@ -2736,8 +2833,8 @@ export async function reconcilePayment(
           retryError.code ===
             "RAZORPAY_ERROR"
         ) {
-          await OrderModel.findByIdAndUpdate(
-            order._id,
+          const failedOrder = await OrderModel.findOneAndUpdate(
+            { _id: order._id, status: "RECOVERING" },
             {
               $set: {
                 status: "FAILED",
@@ -2745,11 +2842,14 @@ export async function reconcilePayment(
             }
           );
 
-          if (action) {
-            action.executionStatus =
-              "FAILED";
-
-            await action.save();
+          if (action && failedOrder) {
+            await AgentActionModel.updateOne(
+              {
+                _id: action._id,
+                executionStatus: { $in: ["RECOVERING", "UNKNOWN"] },
+              },
+              { $set: { executionStatus: "FAILED" } },
+            );
           }
 
           await recordAudit(
@@ -2768,8 +2868,8 @@ export async function reconcilePayment(
          * Unknown retry outcome.
          * Keep the order UNKNOWN.
          */
-        await OrderModel.findByIdAndUpdate(
-          order._id,
+        const resetOrder = await OrderModel.findOneAndUpdate(
+          { _id: order._id, status: "RECOVERING" },
           {
             $set: {
               status: "UNKNOWN",
@@ -2777,11 +2877,14 @@ export async function reconcilePayment(
           }
         );
 
-        if (action) {
-          action.executionStatus =
-            "UNKNOWN";
-
-          await action.save();
+        if (action && resetOrder) {
+          await AgentActionModel.updateOne(
+            {
+              _id: action._id,
+              executionStatus: { $in: ["RECOVERING", "UNKNOWN"] },
+            },
+            { $set: { executionStatus: "UNKNOWN" } },
+          );
         }
 
         await recordAudit(
@@ -2808,38 +2911,43 @@ export async function reconcilePayment(
      * Persist recovered Razorpay identifiers
      * and final order state.
      */
-    order.razorpayPaymentLinkId =
-      paymentLinkId;
-
-    order.razorpayPaymentLinkUrl =
-      paymentLink;
-
-    order.status =
-      finalStatus;
-
-    await order.save();
+    const finalizedOrder = await OrderModel.findOneAndUpdate(
+      { _id: order._id, status: "RECOVERING" },
+      {
+        $set: {
+          razorpayPaymentLinkId: paymentLinkId,
+          razorpayPaymentLinkUrl: paymentLink,
+          status: finalStatus,
+        },
+      },
+      { new: true },
+    );
+    if (!finalizedOrder) {
+      throw new AppError(
+        "Payment state changed while recovery was in progress.",
+        409,
+        "RECOVERY_STATE_CHANGED",
+      );
+    }
 
     /**
      * Synchronize the AgentAction state.
      */
     if (action) {
-      if (finalStatus === "PAID") {
-        action.executionStatus =
-          "SUCCEEDED";
-      } else if (
-        finalStatus === "RECOVERED"
-      ) {
-        action.executionStatus =
-          "RECOVERED";
-      } else if (
-        finalStatus ===
-        "AWAITING_PAYMENT"
-      ) {
-        action.executionStatus =
-          "SUCCEEDED";
+      if (finalStatus === "PAID" || finalStatus === "AWAITING_PAYMENT") {
+        await AgentActionModel.updateOne(
+          { _id: action._id, executionStatus: { $ne: "SUCCEEDED" } },
+          { $set: { executionStatus: "SUCCEEDED" } },
+        );
+      } else if (finalStatus === "RECOVERED") {
+        await AgentActionModel.updateOne(
+          {
+            _id: action._id,
+            executionStatus: { $in: ["IN_PROGRESS", "UNKNOWN", "RECOVERING"] },
+          },
+          { $set: { executionStatus: "RECOVERED" } },
+        );
       }
-
-      await action.save();
     }
 
     return {
@@ -2868,8 +2976,8 @@ export async function reconcilePayment(
      * Any unexpected recovery error
      * returns the order to UNKNOWN.
      */
-    await OrderModel.findByIdAndUpdate(
-      order._id,
+    const resetOrder = await OrderModel.findOneAndUpdate(
+      { _id: order._id, status: "RECOVERING" },
       {
         $set: {
           status: "UNKNOWN",
@@ -2877,11 +2985,14 @@ export async function reconcilePayment(
       }
     );
 
-    if (action) {
-      action.executionStatus =
-        "UNKNOWN";
-
-      await action.save();
+    if (action && resetOrder) {
+      await AgentActionModel.updateOne(
+        {
+          _id: action._id,
+          executionStatus: { $in: ["RECOVERING", "UNKNOWN"] },
+        },
+        { $set: { executionStatus: "UNKNOWN" } },
+      );
     }
 
     throw error;

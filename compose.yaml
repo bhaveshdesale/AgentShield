@@ -1,0 +1,82 @@
+services:
+  mongo:
+    image: mongo:7.0
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - assert.commandWorked(db.adminCommand('ping'))
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: development
+      PORT: "5050"
+      TRUST_PROXY_HOPS: "1"
+      MONGODB_URI: mongodb://mongo:27017/agentshield
+      CLIENT_URL: http://localhost:8080
+      RAZORPAY_MODE: test
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-rzp_test_local_dummy_key}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-local-dummy-api-secret}
+      RAZORPAY_TEST_WEBHOOK_SECRET: ${RAZORPAY_TEST_WEBHOOK_SECRET:-local-dummy-webhook-secret}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:5050/api/health')
+          .then(r => r.json())
+          .then(b => process.exit(b.status === 'ok' && b.mongodb === 'connected' ? 0 : 1))
+          .catch(() => process.exit(1))
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  frontend:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://127.0.0.1:8080/
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  mongo-data:

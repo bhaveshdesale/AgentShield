@@ -191,7 +191,7 @@ export default function AuditLog() {
         (log) =>
           `${log.event} ${
             log.actionId ?? ""
-          } ${JSON.stringify(
+          } ${log.actorEmail ?? ""} ${JSON.stringify(
             log.details,
           )}`
             .toLowerCase()
@@ -466,6 +466,13 @@ export default function AuditLog() {
                               AgentShield
                               Server
                             </span>
+                          </span>
+                        )}
+
+                        {log.actorEmail && (
+                          <span>
+                            <b>ACTOR</b>
+                            <span>{log.actorEmail}</span>
                           </span>
                         )}
 

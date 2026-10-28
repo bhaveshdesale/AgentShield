@@ -306,6 +306,11 @@ export interface AgentAction {
   discountPercent: number | undefined;
   approvalStatus: ApprovalStatus;
   executionStatus: ExecutionStatus;
+  approval?: {
+    approvedBy: Types.ObjectId;
+    approverEmail: string;
+    approvedAt: Date;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -325,6 +330,9 @@ export interface AuditLogDetails {
 
 export interface AuditLog {
   actionId: Types.ObjectId | undefined;
+  actorId?: Types.ObjectId;
+  actorEmail?: string;
+  idempotencyKey?: string;
   event: string;
   details: AuditLogDetails;
   timestamp: Date;

@@ -20,6 +20,20 @@ a { color: inherit; text-decoration: none; }
 .top-nav-link:hover, .top-nav-link.active { color: #f3f2ed; background: rgba(255,255,255,.055); }
 .top-nav-link.active svg { color: #9bd95a; }
 .topbar-right { display: flex; align-items: center; gap: 9px; }
+.user-pill { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a8a9a3; font-size: 11px; }
+.sign-out-button { border: 1px solid rgba(255,255,255,.09); border-radius: 999px; padding: 8px 11px; color: #d3d2cc; background: rgba(255,255,255,.035); font-size: 11px; }
+.session-notice { margin: 12px auto; width: min(720px, calc(100% - 32px)); color: #e5a1a3; }
+.auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(ellipse at 50% 35%, rgba(155,217,90,.08), transparent 50%), #2f2e2d; }
+.auth-card { width: min(420px, 100%); padding: 32px; border: 1px solid rgba(255,255,255,.1); border-radius: 20px; background: #373635; box-shadow: 0 24px 80px rgba(0,0,0,.25); }
+.auth-mark { margin-bottom: 25px; }
+.auth-card .eyebrow { color: #9bd95a; }
+.auth-card h1 { margin: 0; font: 800 30px Manrope, sans-serif; letter-spacing: -.04em; }
+.auth-description { margin: 9px 0 24px; color: #a4a49f; font-size: 13px; line-height: 1.55; }
+.auth-card label { display: grid; gap: 7px; margin-top: 15px; color: #d5d4ce; font-size: 12px; }
+.auth-card input { width: 100%; padding: 12px; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; outline: 0; background: #2f2e2d; color: #f2f1ed; }
+.auth-card input:focus { border-color: rgba(155,217,90,.65); }
+.auth-submit { width: 100%; margin-top: 22px; padding: 12px; border: 0; border-radius: 10px; background: #9bd95a; color: #263122; font-weight: 700; }
+.auth-submit:disabled { opacity: .65; cursor: wait; }
 .mode-pill, .connection-pill { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 11px; border: 1px solid rgba(255,255,255,.08); border-radius: 999px; color: #a8a9a3; font-size: 11px; white-space: nowrap; }
 .mode-pill.large { height: 38px; }
 .mode-dot { width: 6px; height: 6px; border-radius: 50%; background: #9bd95a; box-shadow: 0 0 0 3px rgba(155,217,90,.09); }

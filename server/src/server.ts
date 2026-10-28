@@ -34,15 +34,17 @@ function registerShutdown(server: Server): void {
 
     logger.info("Shutdown started", { signal });
 
-    server.close((closeError: Error | undefined) => {
-      if (closeError) {
-        logger.error("HTTP server close failed", { error: closeError.message });
-      } else {
-        logger.info("HTTP server closed");
-      }
-    });
-
     try {
+      await new Promise<void>((resolve, reject) => {
+        server.close((closeError: Error | undefined) => {
+          if (closeError) {
+            reject(closeError);
+            return;
+          }
+          logger.info("HTTP server closed");
+          resolve();
+        });
+      });
       await disconnectDatabase();
       process.exit(0);
     } catch (error) {
