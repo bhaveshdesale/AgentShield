@@ -11,6 +11,11 @@ updates:
       - dependency-name: mongoose
         update-types:
           - version-update:semver-major
+      # typescript-eslint 8.72.1 supports TypeScript <6.1; TypeScript 7 cannot resolve.
+      # This still permits the compatible TypeScript 6.0 line to be proposed.
+      - dependency-name: typescript
+        versions:
+          - ">=6.1.0"
 
   - package-ecosystem: npm
     directory: /client
@@ -22,3 +27,21 @@ updates:
       - dependency-name: vite
         update-types:
           - version-update:semver-major
+      # Keep React and its renderer/types on the project's supported React 18 major.
+      - dependency-name: react
+        update-types:
+          - version-update:semver-major
+      - dependency-name: react-dom
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "@types/react"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "@types/react-dom"
+        update-types:
+          - version-update:semver-major
+      # typescript-eslint 8.72.1 supports TypeScript <6.1; TypeScript 7 cannot resolve.
+      # This still permits the compatible TypeScript 6.0 line to be proposed.
+      - dependency-name: typescript
+        versions:
+          - ">=6.1.0"
