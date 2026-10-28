@@ -5,9 +5,20 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # Mongoose 9 changes query-update result typings used by payment transitions;
+      # review and validate the payment state machine before allowing a major upgrade.
+      - dependency-name: mongoose
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: npm
     directory: /client
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # plugin-react 4.7.0 supports Vite through 7, not Vite 8.
+      - dependency-name: vite
+        update-types:
+          - version-update:semver-major
