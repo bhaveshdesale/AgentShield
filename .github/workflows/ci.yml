@@ -52,6 +52,10 @@ jobs:
         working-directory: server
         run: npm audit --audit-level=low
 
+      - name: Lint backend
+        working-directory: server
+        run: npm run lint
+
       - name: Typecheck backend
         working-directory: server
         run: npm run typecheck
@@ -72,9 +76,17 @@ jobs:
         working-directory: client
         run: npm audit --audit-level=low
 
+      - name: Lint frontend
+        working-directory: client
+        run: npm run lint
+
       - name: Typecheck frontend
         working-directory: client
         run: npm run typecheck
+
+      - name: Test frontend with coverage
+        working-directory: client
+        run: npm run test:coverage
 
       - name: Build frontend
         working-directory: client

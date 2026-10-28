@@ -5,7 +5,7 @@ import {
   getRazorpayMode,
   getRazorpayWebhookSecret,
 } from "../config/razorpay";
-import { createRazorpayPaymentLink } from "../services/payment.service";
+import { createRazorpayPaymentLink } from "../services/razorpay.client";
 import { AppError } from "../utils/AppError";
 
 function assertConfigError(action: () => unknown): void {

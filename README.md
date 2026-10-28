@@ -284,6 +284,18 @@ At minimum, configure `MONGODB_URI`. The example sets `CLIENT_URL=http://localho
 
 `LLM_API_KEY` is optional. When set, the backend uses an OpenAI-compatible chat-completions API; `LLM_BASE_URL` and `LLM_MODEL` can optionally override the default endpoint and model. The API key name is `LLM_API_KEY` (not `OPENAI_API_KEY`). If no LLM key is configured, the application uses its clearly identified deterministic fallback; this is useful for local setup and tests.
 
+For local development, point `MONGODB_URI` at a disposable database such as `mongodb://127.0.0.1:27017/agentshield_dev`. Keep test data isolated in a separate database, for example `agentshield_test`; backend integration tests use `MONGODB_TEST_URI` when set and otherwise may use `MONGODB_URI`. Never point either variable at shared or production data. MongoDB must already be running locally, or be provided by a local MongoDB/Docker setup.
+
+### Optional frontend API override
+
+The client defaults `VITE_API_BASE_URL` to `/api`, which the Vite development server proxies to `http://localhost:5050`. No frontend environment file is required for the default local setup. To override the API base URL, copy the example and edit `client/.env`:
+
+```bash
+cp client/.env.example client/.env
+```
+
+PowerShell equivalent: `Copy-Item client\.env.example client\.env`. Vite exposes `VITE_` variables to frontend code; do not put credentials or secrets in this file.
+
 ### 4. Provision the first administrator
 
 From the server directory, run the interactive CLI:
@@ -412,6 +424,7 @@ $env:RAZORPAY_KEY_SECRET = "local-dummy-api-secret"
 $env:RAZORPAY_TEST_WEBHOOK_SECRET = "local-dummy-webhook-secret"
 Remove-Item Env:LLM_API_KEY -ErrorAction SilentlyContinue
 npm test
+npm run lint
 npm run typecheck
 npm run build
 npm audit --audit-level=low
@@ -426,19 +439,22 @@ env -u LLM_API_KEY NODE_ENV=test \
   RAZORPAY_MODE=test RAZORPAY_KEY_ID=rzp_test_local_dummy \
   RAZORPAY_KEY_SECRET=local-dummy-api-secret \
   RAZORPAY_TEST_WEBHOOK_SECRET=local-dummy-webhook-secret \
-  npm test
+  npm test && npm run lint && npm run typecheck && npm run build
 ```
 
 Frontend checks (run from `client/`):
 
 ```bash
 npm ci
+npm run lint
+npm test
+npm run test:coverage
 npm run typecheck
 npm run build
 npm audit --audit-level=low
 ```
 
-The local `.github/workflows/ci.yml` defines dependency audits (`npm audit --audit-level=low`), backend typecheck, production build and full test suite, plus frontend typecheck and production build, using Node.js 22, lockfile-based `npm ci`, and a disposable MongoDB service. However, that workflow is untracked in this worktree, and GitHub currently reports zero workflows and zero runs for this repository. These checks are therefore not remotely CI-verified; do not treat the local workflow definition as an enforced release gate.
+The tracked `.github/workflows/ci.yml` defines dependency audits, backend and frontend linting, typechecks, production builds, the backend test suite, and frontend tests with coverage. It uses Node.js 22, lockfile-based `npm ci`, and a disposable MongoDB service with dummy Razorpay test credentials. The workflow definition is not proof of a successful remote run; verify the workflow run in GitHub before treating CI as a passed release gate.
 
 ### Release readiness checklist
 

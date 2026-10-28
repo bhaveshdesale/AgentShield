@@ -10,6 +10,29 @@ export async function listAuditLogs(options: { actionId?: string; limit?: number
   return AuditLogModel.find(filter).sort({ timestamp: -1 }).limit(limit).lean();
 }
 
+export async function recordAudit(
+  event: string,
+  details: Record<string, string | number | boolean | undefined>,
+  actionId: string | null,
+  actor?: AuthenticatedUser,
+): Promise<void> {
+  await AuditLogModel.create({
+    actionId:
+      actionId === null
+        ? undefined
+        : new Types.ObjectId(actionId),
+    ...(actor
+      ? {
+          actorId: new Types.ObjectId(actor.id),
+          actorEmail: actor.email,
+        }
+      : {}),
+    event,
+    details,
+    timestamp: new Date(),
+  });
+}
+
 export async function recordSecurityAudit(
   event: string,
   details: Record<string, string | number | boolean | undefined>,

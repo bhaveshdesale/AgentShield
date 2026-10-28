@@ -36,16 +36,23 @@ Follow the [Getting Started](./README.md#getting-started) section in the README.
    cd server
    npm ci
    npm test
+   npm run lint
    npm run typecheck
+   npm run build
+   npm audit --audit-level=low
 
    # Frontend
    cd ../client
    npm ci
+   npm run lint
+   npm test
+   npm run test:coverage
    npm run typecheck
    npm run build
+   npm audit --audit-level=low
    ```
 
-   For security-sensitive or workflow changes, also run both `npm audit --audit-level=low` commands and `docker compose config --quiet` from the repository root.
+   The backend suite requires an isolated, reachable MongoDB test database. For deployment or workflow changes, also run `docker compose config --quiet` from the repository root when Docker Compose is available.
 5. **Commit and push:**
    ```bash
    git add .

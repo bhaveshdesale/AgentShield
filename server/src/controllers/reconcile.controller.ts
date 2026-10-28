@@ -8,9 +8,11 @@ import mongoose from "mongoose";
 import {
   createPaymentForApprovedAction,
   getPaymentHistoryFromDatabase,
+} from "../services/payment.service";
+import {
   getPaymentStatusByOrderId,
   reconcilePayment,
-} from "../services/payment.service";
+} from "../services/reconciliation.service";
 
 import { AppError } from "../utils/AppError";
 
