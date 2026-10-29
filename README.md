@@ -409,6 +409,8 @@ The health endpoint and login are public. Application routes require an authenti
 
 ## Testing
 
+From the repository root, `npm test` runs both the client and server test suites. The client suite needs no backend services. The server suite requires a running, disposable MongoDB test database; set `MONGODB_TEST_URI` to that database and configure dummy Razorpay test values as shown below before running the combined command. To run only the client tests, use `npm run test:client`.
+
 Backend tests use a disposable MongoDB test database and dummy Razorpay credentials; provider requests in the automated tests are mocked. Do not use the persistent Compose database, real customer data, or live payment credentials. MongoDB must be running locally (or provide another disposable MongoDB test instance).
 
 PowerShell:

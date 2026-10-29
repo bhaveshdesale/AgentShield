@@ -1,0 +1,9 @@
+{
+  "name": "agentshield",
+  "private": true,
+  "scripts": {
+    "test": "npm run test:client && npm run test:server",
+    "test:client": "npm --prefix client test",
+    "test:server": "npm --prefix server test"
+  }
+}
