@@ -97,34 +97,10 @@ export default function Payments() {
     setError("");
 
     try {
-      console.log("🔵 Calling payment history API...");
-
       const result = await apiPaymentHistory();
-
-      console.log(
-        "🟢 Payment history API response:",
-        result,
-      );
-
-      console.log(
-        "🟢 Is array:",
-        Array.isArray(result),
-      );
-
-      console.log(
-        "🟢 Number of payments:",
-        Array.isArray(result)
-          ? result.length
-          : "NOT ARRAY",
-      );
 
       if (Array.isArray(result)) {
         setPayments(result);
-
-        console.log(
-          "🟢 Payments state updated:",
-          result,
-        );
       } else {
         setPayments([]);
 
@@ -133,11 +109,6 @@ export default function Payments() {
         );
       }
     } catch (e) {
-      console.error(
-        "🔴 Payment history error:",
-        e,
-      );
-
       setPayments([]);
 
       setError(
