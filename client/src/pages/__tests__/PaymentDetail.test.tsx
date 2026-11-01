@@ -57,6 +57,10 @@ function renderDetail(initialEntry = `/payments/${paidPayment.orderId}`) {
           element={<PaymentDetail />}
         />
         <Route
+          path="/missing"
+          element={<PaymentDetail />}
+        />
+        <Route
           path="/payments"
           element={<p>Payment history destination</p>}
         />
@@ -67,10 +71,12 @@ function renderDetail(initialEntry = `/payments/${paidPayment.orderId}`) {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 const statusApi = vi.mocked(apiPaymentStatus);
@@ -81,6 +87,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -141,6 +148,34 @@ describe("PaymentDetail", () => {
     expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(6);
   });
 
+  it("shows product and quantity fallbacks for incomplete item details", async () => {
+    statusApi.mockResolvedValue({
+      ...paidPayment,
+      items: [
+        {
+          productId: "",
+          productName: "",
+          quantity: 0,
+          unitPriceInPaise: 0,
+        },
+      ],
+    });
+
+    renderDetail();
+
+    expect(await screen.findByText("Product")).toBeInTheDocument();
+    expect(screen.getByText("Quantity 0")).toBeInTheDocument();
+    expect(screen.getByText("₹0")).toBeInTheDocument();
+  });
+
+  it("shows a clear error when the route has no order ID", async () => {
+    renderDetail("/missing");
+
+    expect(await screen.findByText("Unable to load payment")).toBeInTheDocument();
+    expect(screen.getByText("Order ID is missing.")).toBeInTheDocument();
+    expect(statusApi).not.toHaveBeenCalled();
+  });
+
   it("shows a clear error and lets the user return to payment history", async () => {
     const user = userEvent.setup();
     statusApi.mockRejectedValue(new Error("Payment status is unavailable"));
@@ -160,5 +195,168 @@ describe("PaymentDetail", () => {
     expect(
       screen.getByText("Payment history destination"),
     ).toBeInTheDocument();
+  });
+
+  it("uses a safe error message when the initial request rejects with a non-Error value", async () => {
+    statusApi.mockRejectedValue("network failure");
+
+    renderDetail();
+
+    expect(
+      await screen.findByText("Payment status could not be loaded."),
+    ).toBeInTheDocument();
+  });
+
+  it("stops reconciliation when the provider reports a failed payment", async () => {
+    statusApi
+      .mockResolvedValueOnce({
+        ...paidPayment,
+        status: "AWAITING_PAYMENT",
+      })
+      .mockResolvedValueOnce({
+        ...paidPayment,
+        status: "FAILED",
+      });
+
+    renderDetail();
+
+    expect((await screen.findAllByText("FAILED")).length).toBeGreaterThan(0);
+    expect(statusApi).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries after a transient reconciliation error and clears it after success", async () => {
+    vi.useFakeTimers();
+    statusApi
+      .mockResolvedValueOnce({
+        ...paidPayment,
+        status: "AWAITING_PAYMENT",
+      })
+      .mockRejectedValueOnce(new Error("Temporary status failure"))
+      .mockResolvedValueOnce(paidPayment);
+
+    renderDetail();
+
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    expect(screen.getAllByText("PAID").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Temporary status failure")).not.toBeInTheDocument();
+    expect(statusApi).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps the last known payment visible and reports an error after reconciliation retries fail", async () => {
+    vi.useFakeTimers();
+    statusApi
+      .mockResolvedValueOnce({
+        ...paidPayment,
+        status: "AWAITING_PAYMENT",
+      })
+      .mockRejectedValue("network failure");
+
+    renderDetail();
+
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    expect(screen.getAllByText("AWAITING PAYMENT").length).toBeGreaterThan(0);
+    expect(screen.getByText("Payment status could not be loaded.")).toBeInTheDocument();
+    expect(statusApi).toHaveBeenCalledTimes(6);
+  });
+
+  it("shows the final reconciliation error message when a refresh rejects with an Error", async () => {
+    vi.useFakeTimers();
+    statusApi
+      .mockResolvedValueOnce({
+        ...paidPayment,
+        status: "AWAITING_PAYMENT",
+      })
+      .mockRejectedValue(new Error("Provider status is unavailable"));
+
+    renderDetail();
+
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    expect(screen.getByText("Provider status is unavailable")).toBeInTheDocument();
+    expect(statusApi).toHaveBeenCalledTimes(6);
+  });
+
+  it("ignores a pending reconciliation response after the page unmounts", async () => {
+    const initialRequest = deferred<PaymentStatus>();
+    const reconciliationRequest = deferred<PaymentStatus>();
+    statusApi
+      .mockReturnValueOnce(initialRequest.promise)
+      .mockReturnValueOnce(reconciliationRequest.promise);
+
+    const { unmount } = renderDetail();
+    await act(async () => {
+      initialRequest.resolve(paidPayment);
+    });
+    expect(
+      await screen.findByRole("heading", {
+        name: "Order 1234567890",
+      }),
+    ).toBeInTheDocument();
+
+    unmount();
+    await act(async () => {
+      reconciliationRequest.resolve({
+        ...paidPayment,
+        status: "FAILED",
+      });
+    });
+
+    expect(statusApi).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not start another reconciliation request after unmounting during the retry delay", async () => {
+    vi.useFakeTimers();
+    statusApi.mockResolvedValue({
+      ...paidPayment,
+      status: "AWAITING_PAYMENT",
+    });
+
+    const { unmount } = renderDetail();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(statusApi).toHaveBeenCalledTimes(2);
+
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    expect(statusApi).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a reconciliation error that arrives after the page unmounts", async () => {
+    const initialRequest = deferred<PaymentStatus>();
+    const reconciliationRequest = deferred<PaymentStatus>();
+    statusApi
+      .mockReturnValueOnce(initialRequest.promise)
+      .mockReturnValueOnce(reconciliationRequest.promise);
+
+    const { unmount } = renderDetail();
+    await act(async () => {
+      initialRequest.resolve(paidPayment);
+    });
+    expect(
+      await screen.findByRole("heading", {
+        name: "Order 1234567890",
+      }),
+    ).toBeInTheDocument();
+
+    unmount();
+    await act(async () => {
+      reconciliationRequest.reject(new Error("Late refresh failure"));
+      await reconciliationRequest.promise.catch(() => undefined);
+    });
+
+    expect(statusApi).toHaveBeenCalledTimes(2);
   });
 });

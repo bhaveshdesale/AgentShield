@@ -152,6 +152,16 @@ describe("Payments", () => {
     errorLog.mockRestore();
   });
 
+  it("shows a safe message when the history request rejects with a non-Error value", async () => {
+    historyApi.mockRejectedValue("network failure");
+
+    renderPayments();
+
+    expect(
+      await screen.findByText("Payment history could not be loaded."),
+    ).toBeInTheDocument();
+  });
+
   it("shows an order status lookup with safe fallbacks and navigates to details", async () => {
     const user = userEvent.setup();
     historyApi.mockResolvedValue([]);
@@ -181,6 +191,56 @@ describe("Payments", () => {
     expect(
       screen.getByText("Payment detail destination"),
     ).toBeInTheDocument();
+  });
+
+  it("checks a trimmed order ID when Enter is pressed and shows the pending state", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<PaymentStatus>();
+    historyApi.mockResolvedValue([]);
+    statusApi.mockReturnValue(pending.promise);
+
+    renderPayments();
+
+    const orderInput = screen.getByRole("textbox", { name: "Order ID" });
+    await user.type(orderInput, `  ${payment.orderId}  `);
+    await user.keyboard("{Enter}");
+
+    expect(statusApi).toHaveBeenCalledWith(payment.orderId);
+    expect(
+      screen.getByRole("button", { name: "Checking…" }),
+    ).toBeDisabled();
+
+    await act(async () => {
+      pending.resolve({
+        ...payment,
+        status: "AWAITING_PAYMENT",
+      });
+    });
+
+    expect(await screen.findByText("AWAITING PAYMENT")).toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      new Error("Order lookup unavailable"),
+      "Order lookup unavailable",
+    ],
+    ["network failure", "Payment could not be found."],
+  ])("shows a useful order lookup error when the request rejects", async (failure, message) => {
+    const user = userEvent.setup();
+    historyApi.mockResolvedValue([]);
+    statusApi.mockRejectedValue(failure);
+
+    renderPayments();
+
+    await user.type(
+      screen.getByRole("textbox", { name: "Order ID" }),
+      payment.orderId,
+    );
+    await user.click(screen.getByRole("button", { name: "Check" }));
+
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(screen.queryByText("AWAITING PAYMENT")).not.toBeInTheDocument();
   });
 
   it("asks for an order ID without calling the status API", async () => {

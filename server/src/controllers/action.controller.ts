@@ -6,58 +6,71 @@ import { approveAction as approveActionService, recordAudit } from "../services/
 import { evaluateAction } from "../services/policy.service";
 import { AppError } from "../utils/AppError";
 import { logger } from "../utils/logger";
-import type { ActionProposalInput, PolicyEvaluationResult } from "../types/domain";
+import {
+  AGENT_ACTION_TYPES,
+  type ActionProposalInput,
+  type AgentActionType,
+  type PolicyEvaluationResult,
+} from "../types/domain";
+import { isRecord } from "../utils/request-validation";
 
-interface ValidateActionRequestBody {
-  action?: unknown;
-  items?: unknown;
-  proposedAmountInPaise?: unknown;
-  reason?: unknown;
-  requiresApproval?: unknown;
-  referenceId?: unknown;
-  discountPercent?: unknown;
-  conversationId?: unknown;
+function isAgentActionType(value: string): value is AgentActionType {
+  return AGENT_ACTION_TYPES.some((action) => action === value);
 }
 
 /**
  * Minimal structural validation of the externally supplied proposal body.
  * The policy engine performs the semantic/financial validation.
  */
-export function parseProposalInput(body: ValidateActionRequestBody): ActionProposalInput {
-  const action = typeof body.action === "string" ? body.action : "";
+export function parseProposalInput(value: unknown): ActionProposalInput {
+  if (!isRecord(value)) {
+    throw new AppError("Request body must be an object.", 400, "INVALID_PROPOSAL");
+  }
+
+  const body = value;
+  const action =
+    typeof body.action === "string" && isAgentActionType(body.action)
+      ? body.action
+      : undefined;
   const referenceId =
     typeof body.referenceId === "string" && body.referenceId.trim().length > 0
       ? body.referenceId.trim()
-      : "";
-  const reason = typeof body.reason === "string" ? body.reason : "";
+      : undefined;
+  const reason =
+    typeof body.reason === "string" && body.reason.trim().length > 0
+      ? body.reason
+      : undefined;
   const proposedAmountInPaise =
     typeof body.proposedAmountInPaise === "number" &&
     Number.isInteger(body.proposedAmountInPaise) &&
     body.proposedAmountInPaise >= 0
       ? body.proposedAmountInPaise
-      : -1;
-  const requiresApproval = body.requiresApproval === true;
+      : undefined;
+  const requiresApproval =
+    typeof body.requiresApproval === "boolean"
+      ? body.requiresApproval
+      : undefined;
+  const hasDiscount = body.discountPercent !== undefined;
   const discountPercent =
-    typeof body.discountPercent === "number" && Number.isFinite(body.discountPercent)
+    hasDiscount && typeof body.discountPercent === "number"
       ? body.discountPercent
       : undefined;
 
   let items: ActionProposalInput["items"] = [];
   if (Array.isArray(body.items)) {
     items = body.items.map((item) => {
-      if (typeof item !== "object" || item === null) {
+      if (!isRecord(item)) {
         throw new AppError("Each item must be an object with a valid productId and quantity.", 400, "INVALID_PROPOSAL");
       }
-      const record = item as Record<string, unknown>;
       const productId =
-        typeof record.productId === "string" && Types.ObjectId.isValid(record.productId)
-          ? new Types.ObjectId(record.productId)
+        typeof item.productId === "string" && Types.ObjectId.isValid(item.productId)
+          ? new Types.ObjectId(item.productId)
           : null;
       const quantity =
-        typeof record.quantity === "number" &&
-        Number.isInteger(record.quantity) &&
-        record.quantity > 0
-          ? record.quantity
+        typeof item.quantity === "number" &&
+        Number.isInteger(item.quantity) &&
+        item.quantity > 0
+          ? item.quantity
           : null;
 
       if (productId === null || quantity === null) {
@@ -68,21 +81,26 @@ export function parseProposalInput(body: ValidateActionRequestBody): ActionPropo
   }
 
   if (
-    action.length === 0 ||
-    referenceId.length === 0 ||
-    proposedAmountInPaise < 0 ||
-    items.length === 0
+    action === undefined ||
+    referenceId === undefined ||
+    reason === undefined ||
+    proposedAmountInPaise === undefined ||
+    requiresApproval === undefined ||
+    items.length === 0 ||
+    (hasDiscount &&
+      (discountPercent === undefined || !Number.isFinite(discountPercent))) ||
+    (body.conversationId !== undefined &&
+      typeof body.conversationId !== "string")
   ) {
     throw new AppError(
-      "Invalid proposal: action, referenceId, proposedAmountInPaise (integer paise >= 0) " +
-        "and at least one item with a valid productId and positive integer quantity are required.",
+      "Invalid proposal: required fields must be valid and optional fields must have the expected types.",
       400,
       "INVALID_PROPOSAL"
     );
   }
 
   return {
-    action: action as ActionProposalInput["action"],
+    action,
     items,
     proposedAmountInPaise,
     reason,
@@ -98,7 +116,8 @@ export async function validateAction(
   next: NextFunction
 ): Promise<void> {
   try {
-    const proposal = parseProposalInput(req.body as ValidateActionRequestBody);
+    const body = req.body;
+    const proposal = parseProposalInput(body);
 
     const merchant = await MerchantModel.findOne().sort({ createdAt: 1 });
     if (!merchant) {
@@ -110,9 +129,10 @@ export async function validateAction(
     }
 
     const result: PolicyEvaluationResult = await evaluateAction(proposal, merchant.policy);
-    const body = req.body as ValidateActionRequestBody;
     const conversationId =
-      typeof body.conversationId === "string" && body.conversationId.trim().length > 0
+      isRecord(body) &&
+      typeof body.conversationId === "string" &&
+      body.conversationId.trim().length > 0
         ? body.conversationId.trim()
         : "external-validation";
     const action = await AgentActionModel.create({
@@ -162,7 +182,10 @@ export async function validateAction(
 
 export async function approveAction(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const actionId = typeof req.body?.actionId === "string" ? req.body.actionId.trim() : "";
+    if (!isRecord(req.body)) {
+      throw new AppError("actionId is required.", 400, "INVALID_ACTION_ID");
+    }
+    const actionId = typeof req.body.actionId === "string" ? req.body.actionId.trim() : "";
     if (!actionId) {
       throw new AppError("actionId is required.", 400, "INVALID_ACTION_ID");
     }

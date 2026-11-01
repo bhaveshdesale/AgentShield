@@ -5,11 +5,9 @@ import { Types } from "mongoose";
 import { parseProposalInput } from "../controllers/action.controller";
 import { AppError } from "../utils/AppError";
 
-type ProposalInput = Parameters<typeof parseProposalInput>[0];
-
 const PRODUCT_ID = "507f1f77bcf86cd799439011";
 
-function validInput(overrides: Partial<ProposalInput> = {}): ProposalInput {
+function validInput(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     action: "CREATE_PAYMENT",
     items: [{ productId: PRODUCT_ID, quantity: 2 }],
@@ -21,7 +19,7 @@ function validInput(overrides: Partial<ProposalInput> = {}): ProposalInput {
   };
 }
 
-function assertInvalidProposal(input: ProposalInput): void {
+function assertInvalidProposal(input: unknown): void {
   assert.throws(
     () => parseProposalInput(input),
     (error: unknown) =>
@@ -56,6 +54,22 @@ describe("parseProposalInput", () => {
         items: [],
       }),
     );
+    assertInvalidProposal(
+      validInput({
+        reason: undefined,
+      }),
+    );
+    assertInvalidProposal(
+      validInput({
+        requiresApproval: undefined,
+      }),
+    );
+  });
+
+  it("rejects primitive and array request bodies", () => {
+    for (const body of [null, [], "proposal", 42]) {
+      assertInvalidProposal(body);
+    }
   });
 
   it("rejects non-array items and malformed item values", () => {
@@ -95,27 +109,23 @@ describe("parseProposalInput", () => {
     );
   });
 
-  it("preserves finite optional discounts and omits malformed discounts", () => {
+  it("preserves finite optional discounts and rejects malformed discounts", () => {
     assert.equal(
       parseProposalInput(validInput({ discountPercent: 12.5 })).discountPercent,
       12.5,
     );
 
-    const withoutDiscount = parseProposalInput(
-      validInput({ discountPercent: "12.5" }),
-    );
-    assert.equal("discountPercent" in withoutDiscount, false);
+    assertInvalidProposal(validInput({ discountPercent: "12.5" }));
+    assertInvalidProposal(validInput({ discountPercent: Number.NaN }));
   });
 
-  it("uses only a literal true value for requiresApproval", () => {
+  it("preserves either boolean approval value and rejects other types", () => {
     assert.equal(
       parseProposalInput(validInput({ requiresApproval: false })).requiresApproval,
       false,
     );
-    assert.equal(
-      parseProposalInput(validInput({ requiresApproval: "true" }))
-        .requiresApproval,
-      false,
-    );
+    assertInvalidProposal(validInput({ requiresApproval: "true" }));
+    assertInvalidProposal(validInput({ reason: 42 }));
+    assertInvalidProposal(validInput({ conversationId: 42 }));
   });
 });

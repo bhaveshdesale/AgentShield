@@ -5,11 +5,7 @@ import { runAgentChat, type AgentRecommendation } from "../services/agent.servic
 import { AppError } from "../utils/AppError";
 import { logger } from "../utils/logger";
 import type { ActionProposalInput, PolicyEvaluationResult } from "../types/domain";
-
-interface AgentChatRequestBody {
-  message?: unknown;
-  conversationId?: unknown;
-}
+import { isRecord } from "../utils/request-validation";
 
 export interface AgentChatResponse {
   conversationId: string;
@@ -29,8 +25,25 @@ export async function agentChat(
   next: NextFunction
 ): Promise<void> {
   try {
-    const body = req.body as AgentChatRequestBody;
-    const message = typeof body.message === "string" ? body.message : "";
+    const body = req.body;
+    if (!isRecord(body)) {
+      throw new AppError("Request body must be an object.", 400, "INVALID_REQUEST");
+    }
+    if (typeof body.message !== "string") {
+      throw new AppError(
+        'Field "message" is required and must be a non-empty string.',
+        400,
+        "INVALID_REQUEST"
+      );
+    }
+    if (
+      body.conversationId !== undefined &&
+      typeof body.conversationId !== "string"
+    ) {
+      throw new AppError('Field "conversationId" must be a string.', 400, "INVALID_REQUEST");
+    }
+
+    const message = body.message;
     const conversationId =
       typeof body.conversationId === "string" && body.conversationId.trim().length > 0
         ? body.conversationId.trim()
