@@ -170,7 +170,7 @@ describe("apiPaymentStatus", () => {
 
     await expect(apiPaymentStatus(status.orderId)).resolves.toEqual(status);
     expect(fetch).toHaveBeenCalledWith(
-      "http://localhost:5050/api/payments/order%2F1/status",
+      "/api/payments/order%2F1/status",
       expect.objectContaining({ credentials: "include" }),
     );
   });
