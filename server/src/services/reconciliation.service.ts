@@ -5,7 +5,11 @@ import { OrderModel } from "../models/Order";
 import { ProductModel } from "../models/Product";
 import { AppError } from "../utils/AppError";
 import { recordAudit, recordIdempotentAudit } from "./audit.service";
-import { createRazorpayPaymentLink, lookupRazorpayPaymentLink } from "./razorpay.client";
+import {
+  createRazorpayPaymentLink,
+  isDefinitivePaymentLinkCreationFailure,
+  lookupRazorpayPaymentLink,
+} from "./razorpay.client";
 import type { RazorpayPaymentLinkDetail } from "./razorpay.client";
 import type { OrderStatus } from "../types/domain";
 import { claimPaymentRecovery } from "./payment-recovery-claim.service";
@@ -447,12 +451,7 @@ export async function reconcilePayment(
         /**
          * Known Razorpay rejection.
          */
-        if (
-          retryError instanceof
-            AppError &&
-          retryError.code ===
-            "RAZORPAY_ERROR"
-        ) {
+        if (isDefinitivePaymentLinkCreationFailure(retryError)) {
           const failedOrder = await OrderModel.findOneAndUpdate(
             { _id: order._id, status: "RECOVERING" },
             {

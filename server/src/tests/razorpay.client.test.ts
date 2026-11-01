@@ -136,49 +136,210 @@ describe("Razorpay client", () => {
       }
     }));
 
-  it("maps provider errors and rejects malformed payment-link responses", async () =>
+  it("classifies a documented BAD_REQUEST_ERROR response as a definitive rejection", async (context) =>
     withTestCredentials(async () => {
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = async () =>
+      context.mock.method(globalThis, "fetch", async () =>
         new Response(
           JSON.stringify({
-            error: { code: "BAD_REQUEST", description: "private provider detail" },
+            error: {
+              code: "BAD_REQUEST_ERROR",
+              field: "amount",
+              description: "private provider detail",
+            },
           }),
           { status: 400 },
-        );
+        ),
+      );
 
-      try {
-        await assert.rejects(
-          () =>
-            createRazorpayPaymentLink({
-              amountInPaise: 100,
-              referenceId: "client-test-003",
-              description: "Provider rejection",
-            }),
-          (error: unknown) =>
-            error instanceof AppError &&
-            error.code === "RAZORPAY_ERROR" &&
-            !error.message.includes("private provider detail"),
-        );
+      await assert.rejects(
+        () =>
+          createRazorpayPaymentLink({
+            amountInPaise: 100,
+            referenceId: "client-test-003",
+            description: "Provider rejection",
+          }),
+        (error: unknown) =>
+          error instanceof AppError &&
+          error.code === "RAZORPAY_ERROR" &&
+          !error.message.includes("private provider detail"),
+      );
+    }));
 
-        globalThis.fetch = async () =>
-          new Response(JSON.stringify({ id: "plink_missing_url" }), {
-            status: 200,
-          });
-        await assert.rejects(
-          () =>
-            createRazorpayPaymentLink({
-              amountInPaise: 100,
-              referenceId: "client-test-004",
-              description: "Malformed response",
-            }),
-          (error: unknown) =>
-            error instanceof AppError &&
-            error.code === "RAZORPAY_ERROR",
-        );
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
+  it("keeps duplicate-reference errors uncertain because a link may already exist", async (context) =>
+    withTestCredentials(async () => {
+      context.mock.method(globalThis, "fetch", async () =>
+        Response.json(
+          {
+            error: {
+              code: "BAD_REQUEST_ERROR",
+              field: "reference_id",
+              description: "reference_id must be unique",
+            },
+          },
+          { status: 400 },
+        ),
+      );
+
+      await assert.rejects(
+        () =>
+          createRazorpayPaymentLink({
+            amountInPaise: 100,
+            referenceId: "client-test-012",
+            description: "Duplicate reference",
+          }),
+        (error: unknown) =>
+          error instanceof AppError &&
+          error.code === "RAZORPAY_OUTCOME_UNKNOWN",
+      );
+    }));
+
+  it("classifies an HTTP 5xx response as an uncertain outcome", async (context) =>
+    withTestCredentials(async () => {
+      context.mock.method(globalThis, "fetch", async () =>
+        Response.json(
+          { error: { code: "SERVER_ERROR" } },
+          { status: 500 },
+        ),
+      );
+
+      await assert.rejects(
+        () =>
+          createRazorpayPaymentLink({
+            amountInPaise: 100,
+            referenceId: "client-test-005",
+            description: "Server error",
+          }),
+        (error: unknown) =>
+          error instanceof AppError &&
+          error.code === "RAZORPAY_OUTCOME_UNKNOWN",
+      );
+    }));
+
+  it("classifies a non-final HTTP 202 response as an uncertain outcome", async (context) =>
+    withTestCredentials(async () => {
+      context.mock.method(globalThis, "fetch", async () =>
+        Response.json(
+          {
+            id: "plink_accepted",
+            short_url: "https://rzp.test/plink_accepted",
+            status: "created",
+          },
+          { status: 202 },
+        ),
+      );
+
+      await assert.rejects(
+        () =>
+          createRazorpayPaymentLink({
+            amountInPaise: 100,
+            referenceId: "client-test-011",
+            description: "Non-final response",
+          }),
+        (error: unknown) =>
+          error instanceof AppError &&
+          error.code === "RAZORPAY_OUTCOME_UNKNOWN",
+      );
+    }));
+
+  it("classifies other HTTP error responses as uncertain", async (context) =>
+    withTestCredentials(async () => {
+      context.mock.method(globalThis, "fetch", async () =>
+        Response.json(
+          { error: { code: "RATE_LIMIT_ERROR" } },
+          { status: 429 },
+        ),
+      );
+
+      await assert.rejects(
+        () =>
+          createRazorpayPaymentLink({
+            amountInPaise: 100,
+            referenceId: "client-test-006",
+            description: "Rate limit",
+          }),
+        (error: unknown) =>
+          error instanceof AppError &&
+          error.code === "RAZORPAY_OUTCOME_UNKNOWN",
+      );
+    }));
+
+  it("classifies a network failure as an uncertain outcome", async (context) =>
+    withTestCredentials(async () => {
+      context.mock.method(globalThis, "fetch", async () => {
+        throw new TypeError("Connection reset");
+      });
+
+      await assert.rejects(
+        () =>
+          createRazorpayPaymentLink({
+            amountInPaise: 100,
+            referenceId: "client-test-007",
+            description: "Network failure",
+          }),
+        (error: unknown) =>
+          error instanceof AppError &&
+          error.code === "RAZORPAY_OUTCOME_UNKNOWN",
+      );
+    }));
+
+  it("classifies a timed out request as an uncertain outcome", async (context) =>
+    withTestCredentials(async () => {
+      context.mock.method(globalThis, "fetch", async () => {
+        const error = new Error("Request timed out");
+        error.name = "AbortError";
+        throw error;
+      });
+
+      await assert.rejects(
+        () =>
+          createRazorpayPaymentLink({
+            amountInPaise: 100,
+            referenceId: "client-test-008",
+            description: "Timeout",
+          }),
+        (error: unknown) =>
+          error instanceof AppError &&
+          error.statusCode === 504 &&
+          error.code === "RAZORPAY_OUTCOME_UNKNOWN",
+      );
+    }));
+
+  it("classifies malformed successful responses as uncertain", async (context) =>
+    withTestCredentials(async () => {
+      context.mock.method(globalThis, "fetch", async () =>
+        new Response("{", { status: 200 }),
+      );
+
+      await assert.rejects(
+        () =>
+          createRazorpayPaymentLink({
+            amountInPaise: 100,
+            referenceId: "client-test-009",
+            description: "Malformed response",
+          }),
+        (error: unknown) =>
+          error instanceof AppError &&
+          error.code === "RAZORPAY_OUTCOME_UNKNOWN",
+      );
+    }));
+
+  it("classifies incomplete successful responses as uncertain", async (context) =>
+    withTestCredentials(async () => {
+      context.mock.method(globalThis, "fetch", async () =>
+        Response.json({ id: "plink_missing_url" }),
+      );
+
+      await assert.rejects(
+        () =>
+          createRazorpayPaymentLink({
+            amountInPaise: 100,
+            referenceId: "client-test-010",
+            description: "Incomplete response",
+          }),
+        (error: unknown) =>
+          error instanceof AppError &&
+          error.code === "RAZORPAY_OUTCOME_UNKNOWN",
+      );
     }));
 
   it("looks up links by encoded ID or reference and treats a missing ID as absent", async () =>
@@ -237,6 +398,53 @@ describe("Razorpay client", () => {
         ]);
       } finally {
         globalThis.fetch = originalFetch;
+      }
+    }));
+
+  it("does not treat incomplete, mismatched, or ambiguous reference lookups as absence", async (context) =>
+    withTestCredentials(async () => {
+      const responses = [
+        Response.json({}),
+        Response.json({
+          payment_links: [{
+            id: "plink_other_reference",
+            short_url: "https://rzp.test/plink_other_reference",
+            status: "created",
+            reference_id: "another-reference",
+          }],
+        }),
+        Response.json({
+          payment_links: [
+            {
+              id: "plink_first",
+              short_url: "https://rzp.test/plink_first",
+              status: "created",
+              reference_id: "expected-reference",
+            },
+            {
+              id: "plink_second",
+              short_url: "https://rzp.test/plink_second",
+              status: "created",
+              reference_id: "expected-reference",
+            },
+          ],
+        }),
+      ];
+      let responseIndex = 0;
+      context.mock.method(globalThis, "fetch", async () =>
+        responses[responseIndex++],
+      );
+
+      for (let index = 0; index < responses.length; index += 1) {
+        await assert.rejects(
+          () =>
+            lookupRazorpayPaymentLink({
+              referenceId: "expected-reference",
+            }),
+          (error: unknown) =>
+            error instanceof AppError &&
+            error.code === "RAZORPAY_ERROR",
+        );
       }
     }));
 });

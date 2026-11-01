@@ -1,27 +1,26 @@
-import mongoose, { HydratedDocument, Types } from "mongoose";
+import { HydratedDocument, Types } from "mongoose";
 import { AuditLogModel } from "../models/AuditLog";
-import { MerchantModel } from "../models/Merchant";
 import { OrderModel } from "../models/Order";
-import { ProductModel } from "../models/Product";
 import { AgentActionModel } from "../models/AgentAction";
 import { getPaymentCallbackUrl } from "../config/env";
 import { AppError } from "../utils/AppError";
-import { logger } from "../utils/logger";
 import { getRazorpayCredentials } from "../config/razorpay";
-import { evaluateAction } from "./policy.service";
 import {
-  recordAudit,
-  recordSecurityAudit,
-} from "./audit.service";
-import { createRazorpayPaymentLink } from "./razorpay.client";
+  approveAction,
+  revalidateAction,
+} from "./payment-approval.service";
+import { recordAudit } from "./audit.service";
+import {
+  createRazorpayPaymentLink,
+  isDefinitivePaymentLinkCreationFailure,
+} from "./razorpay.client";
+import { createOrderSnapshot } from "./payment-order.service";
 import {
   calculateAuthoritativeAmount,
   reconcilePayment,
 } from "./reconciliation.service";
 import type { AuthenticatedUser } from "../types/auth";
 import type {
-  ActionProposalInput,
-  AgentAction,
   Order,
 } from "../types/domain";
 
@@ -31,6 +30,8 @@ export { getPaymentStatusByOrderId } from "./reconciliation.service";
 export { getPaymentHistoryFromDatabase } from "./payment-history.service";
 export type { PaymentHistoryItem } from "./payment-history.service";
 export { recordAudit } from "./audit.service";
+export { approveAction };
+export type { ActionApprovalResult } from "./payment-approval.service";
 export type { RazorpayPaymentLink, RazorpayPaymentLinkDetail } from "./razorpay.client";
 
 /**
@@ -53,403 +54,10 @@ export interface ApprovalResult {
 }
 
 /**
- * Creates an immutable order snapshot using
- * authoritative MongoDB prices.
- */
-async function createOrderSnapshot(
-  proposal: {
-    referenceId: string;
-    items: {
-      productId: Types.ObjectId;
-      quantity: number;
-    }[];
-  },
-  amountInPaise: number
-): Promise<HydratedDocument<Order>> {
-  const existing = await OrderModel.findOne({
-    referenceId: proposal.referenceId,
-  });
-
-  if (existing) {
-    return existing;
-  }
-
-  const products = await ProductModel.find({
-    _id: {
-      $in: proposal.items.map(
-        (item) => item.productId
-      ),
-    },
-  });
-
-  const prices = new Map(
-    products.map((product) => [
-      String(product._id),
-      product.priceInPaise,
-    ])
-  );
-
-  const items = proposal.items.map((item) => {
-    const unitPriceInPaise = prices.get(
-      String(item.productId)
-    );
-
-    if (unitPriceInPaise === undefined) {
-      throw new AppError(
-        "Product changed before order creation.",
-        409,
-        "PRODUCT_CHANGED"
-      );
-    }
-
-    return {
-      productId: item.productId,
-      quantity: item.quantity,
-      unitPriceInPaise,
-    };
-  });
-
-  try {
-    return await OrderModel.create({
-      items,
-      amountInPaise,
-      currency: "INR",
-      status: "CREATED",
-      referenceId: proposal.referenceId,
-    });
-  } catch (error) {
-    if (
-      error instanceof mongoose.mongo.MongoServerError &&
-      error.code === 11000
-    ) {
-      const concurrentOrder =
-        await OrderModel.findOne({
-          referenceId: proposal.referenceId,
-        });
-
-      if (concurrentOrder) {
-        return concurrentOrder;
-      }
-    }
-
-    throw error;
-  }
-}
-
-/**
- * Builds the persisted proposal back into the
- * policy-engine input format.
- */
-function buildPersistedProposal(
-  action: HydratedDocument<AgentAction>
-): ActionProposalInput {
-  return {
-    action: action.proposal.action,
-
-    items: action.proposal.items.map((item) => ({
-      productId: item.productId,
-      quantity: item.quantity,
-    })),
-
-    proposedAmountInPaise:
-      action.proposal.proposedAmountInPaise,
-
-    reason: action.proposal.reason,
-
-    requiresApproval:
-      action.proposal.requiresApproval,
-
-    referenceId: action.referenceId,
-
-    ...(action.discountPercent === undefined
-      ? {}
-      : {
-          discountPercent:
-            action.discountPercent,
-        }),
-  };
-}
-
-/**
- * Re-evaluates the action against the CURRENT
- * merchant policy and CURRENT catalog.
- */
-async function revalidateAction(
-  action: HydratedDocument<AgentAction>,
-  actor?: AuthenticatedUser,
-  options: { requireApproval?: boolean } = {},
-) {
-  const merchant = await MerchantModel.findOne().sort({
-    createdAt: 1,
-  });
-
-  if (!merchant) {
-    throw new AppError(
-      "Merchant policy was not found.",
-      503,
-      "MERCHANT_NOT_FOUND"
-    );
-  }
-
-  const proposal =
-    buildPersistedProposal(action);
-
-  const result = await evaluateAction(
-    proposal,
-    merchant.policy
-  );
-
-  if (
-    result.decision !== "ALLOW" ||
-    result.verifiedAmountInPaise !==
-      action.verifiedAmountInPaise
-  ) {
-    action.policyResult = {
-      decision: result.decision,
-      checks: result.checks,
-    };
-
-    action.approvalStatus = "REJECTED";
-    action.executionStatus = "BLOCKED";
-
-    await action.save();
-
-    await recordAudit(
-      "ACTION_BLOCKED",
-      {
-        policyDecision: result.decision,
-        verifiedAmountInPaise:
-          result.verifiedAmountInPaise,
-      },
-      String(action._id),
-      actor,
-    );
-
-    throw new AppError(
-      "Action no longer satisfies current merchant policy.",
-      409,
-      "ACTION_REVALIDATION_FAILED"
-    );
-  }
-
-  if (!result.approvalRequired) {
-    action.approvalRequired = false;
-    action.approvalStatus = "NOT_REQUIRED";
-    await action.save();
-    return result;
-  }
-
-  action.approvalRequired = true;
-  if (
-    options.requireApproval &&
-    (action.approvalStatus !== "APPROVED" || !action.approval?.approvedBy)
-  ) {
-    action.approvalStatus = "PENDING";
-    await action.save();
-    throw new AppError(
-      "Current merchant policy requires human approval before payment creation.",
-      409,
-      "APPROVAL_REQUIRED",
-    );
-  }
-  await action.save();
-  return result;
-}
-
-/**
  * Explicit human approval.
  *
  * Approval NEVER calls Razorpay.
  */
-export interface ActionApprovalResult {
-  success: true;
-  actionId: string;
-  approvalStatus: "APPROVED";
-  executionStatus: "NOT_STARTED";
-}
-
-export async function approveAction(
-  options: {
-    actionId: string;
-    actor: AuthenticatedUser;
-  }
-): Promise<ActionApprovalResult> {
-  const deny = async (reason: string, statusCode: number, code: string): Promise<never> => {
-    await recordSecurityAudit(
-      "ACTION_APPROVAL_DENIED",
-      { outcome: "DENIED", actionId: options.actionId, reason: code },
-      options.actor,
-      Types.ObjectId.isValid(options.actionId) ? options.actionId : undefined,
-    );
-    throw new AppError(reason, statusCode, code);
-  };
-
-  if (
-    !Types.ObjectId.isValid(options.actionId)
-  ) {
-    return deny(
-      "Invalid action ID.",
-      400,
-      "INVALID_ACTION_ID"
-    );
-  }
-
-  const action =
-    await AgentActionModel.findById(
-      options.actionId
-    );
-
-  if (!action) {
-    return deny(
-      "Agent action was not found.",
-      404,
-      "ACTION_NOT_FOUND"
-    );
-  }
-
-  if (
-    action.action !== "CREATE_PAYMENT" ||
-    action.policyResult?.decision !== "ALLOW"
-  ) {
-    return deny(
-      "Only policy-allowed payment actions can be approved.",
-      409,
-      "ACTION_NOT_ALLOWED"
-    );
-  }
-
-  if (!action.approvalRequired) {
-    return deny(
-      "This action does not require human approval.",
-      409,
-      "APPROVAL_NOT_REQUIRED",
-    );
-  }
-
-  if (
-    action.approvalStatus !== "PENDING" ||
-    action.executionStatus !== "NOT_STARTED"
-  ) {
-    return deny(
-      "This action has already been approved or processed.",
-      409,
-      "ACTION_ALREADY_PROCESSED"
-    );
-  }
-
-  let reevaluation: Awaited<ReturnType<typeof revalidateAction>>;
-  try {
-    reevaluation = await revalidateAction(action, options.actor);
-  } catch (error) {
-    await recordSecurityAudit(
-      "ACTION_APPROVAL_DENIED",
-      {
-        outcome: "DENIED",
-        actionId: options.actionId,
-        reason: error instanceof AppError ? error.code : "REVALIDATION_FAILED",
-      },
-      options.actor,
-      options.actionId,
-    );
-    throw error;
-  }
-  if (!reevaluation.approvalRequired) {
-    return deny(
-      "Current merchant policy does not require human approval for this action.",
-      409,
-      "APPROVAL_NOT_REQUIRED",
-    );
-  }
-
-  const claimedAction =
-    await AgentActionModel.findOneAndUpdate(
-      {
-        _id: action._id,
-        approvalStatus: "PENDING",
-        executionStatus: "NOT_STARTED",
-      },
-      {
-        $set: {
-          approvalStatus: "APPROVED",
-          executionStatus: "NOT_STARTED",
-            approval: {
-              approvedBy: new Types.ObjectId(options.actor.id),
-              approverEmail: options.actor.email,
-              approvedAt: new Date(),
-            },
-
-          policyResult: {
-            decision: reevaluation.decision,
-            checks: reevaluation.checks,
-          },
-
-          verifiedAmountInPaise:
-            reevaluation.verifiedAmountInPaise,
-        },
-      },
-      {
-        new: true,
-      }
-    );
-
-  if (!claimedAction) {
-    return deny(
-      "This action is already being processed.",
-      409,
-      "ACTION_ALREADY_PROCESSED"
-    );
-  }
-
-  try {
-    await recordAudit(
-      "ACTION_APPROVED",
-      {
-        approvalState: "APPROVED",
-        executionState: "NOT_STARTED",
-      },
-      String(claimedAction._id),
-      options.actor,
-    );
-  } catch (error) {
-    try {
-      const rollback = await AgentActionModel.updateOne(
-        {
-          _id: claimedAction._id,
-          approvalStatus: "APPROVED",
-          executionStatus: "NOT_STARTED",
-          "approval.approvedBy": new Types.ObjectId(options.actor.id),
-        },
-        {
-          $set: { approvalStatus: "PENDING" },
-          $unset: { approval: "" },
-        },
-      );
-      if (rollback.modifiedCount !== 1) {
-        logger.error("Approval audit failed and action rollback did not match", {
-          actionId: String(claimedAction._id),
-        });
-      }
-    } catch (rollbackError) {
-      logger.error("Approval audit and rollback failed", {
-        actionId: String(claimedAction._id),
-        auditError: error instanceof Error ? error.message : "Unknown audit error",
-        rollbackError:
-          rollbackError instanceof Error
-            ? rollbackError.message
-            : "Unknown rollback error",
-      });
-    }
-    throw error;
-  }
-
-  return {
-    success: true,
-    actionId: String(claimedAction._id),
-    approvalStatus: "APPROVED",
-    executionStatus: "NOT_STARTED",
-  };
-}
-
 /**
  * Executes an explicitly approved action or one that does not require approval.
  *
@@ -759,13 +367,7 @@ export async function createPaymentForApprovedAction(
       status: order.status,
     };
   } catch (error) {
-    /**
-     * Known Razorpay rejection.
-     */
-    if (
-      error instanceof AppError &&
-      error.code === "RAZORPAY_ERROR"
-    ) {
+    if (isDefinitivePaymentLinkCreationFailure(error)) {
       if (order) {
         await OrderModel.findOneAndUpdate(
           { _id: order._id, status: { $in: ["CREATED", "AWAITING_PAYMENT"] } },

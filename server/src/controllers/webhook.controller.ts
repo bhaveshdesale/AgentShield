@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { recordAudit } from "../services/payment.service";
+import { recordAudit } from "../services/audit.service";
 import { processRazorpayWebhook, verifyRazorpaySignature } from "../services/webhook.service";
 import { AppError } from "../utils/AppError";
 import { logger } from "../utils/logger";

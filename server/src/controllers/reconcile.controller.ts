@@ -5,10 +5,8 @@ import type {
 } from "express";
 import mongoose from "mongoose";
 
-import {
-  createPaymentForApprovedAction,
-  getPaymentHistoryFromDatabase,
-} from "../services/payment.service";
+import { createPaymentForApprovedAction } from "../services/payment.service";
+import { getPaymentHistoryFromDatabase } from "../services/payment-history.service";
 import {
   getPaymentStatusByOrderId,
   reconcilePayment,

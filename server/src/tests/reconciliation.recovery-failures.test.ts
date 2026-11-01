@@ -88,12 +88,14 @@ it(
           new Response(
             JSON.stringify({
               error: {
+                code: "BAD_REQUEST_ERROR",
+                field: "amount",
                 description:
                   "declined",
               },
             }),
             {
-              status: 500,
+              status: 400,
             },
           );
 
@@ -140,6 +142,57 @@ it(
         assert.equal(
           order?.status,
           "FAILED",
+        );
+      },
+    )
+
+it(
+      "keeps the order and action UNKNOWN after a server error without retrying creation",
+      async () => {
+        let createCalls = 0;
+        globalThis.fetch = async () => {
+          createCalls += 1;
+          return new Response(
+            JSON.stringify({
+              error: { code: "SERVER_ERROR" },
+            }),
+            { status: 500 },
+          );
+        };
+
+        const validated = await validate(
+          proposal("m7-server-error-uncertain-006"),
+        );
+        const actionId = (
+          validated.body as { actionId: string }
+        ).actionId;
+
+        await assert.rejects(
+          () =>
+            approveActionAndCreatePayment({
+              actionId,
+              actor: testActor,
+            }),
+          (error: unknown) =>
+            error instanceof Error &&
+            "code" in error &&
+            error.code === "RAZORPAY_OUTCOME_UNKNOWN",
+        );
+
+        const [action, order] = await Promise.all([
+          AgentActionModel.findById(actionId),
+          OrderModel.findOne({
+            referenceId: "m7-server-error-uncertain-006",
+          }),
+        ]);
+        assert.equal(createCalls, 1);
+        assert.equal(action?.executionStatus, "UNKNOWN");
+        assert.equal(order?.status, "UNKNOWN");
+        assert.ok(
+          await AuditLogModel.exists({
+            actionId,
+            event: "PAYMENT_EXECUTION_UNKNOWN",
+          }),
         );
       },
     )
