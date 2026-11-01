@@ -3,6 +3,15 @@ import type { ApiErrorBody } from "../types/http";
 import { AppError } from "../utils/AppError";
 import { logger } from "../utils/logger";
 
+function isMalformedJsonError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "type" in error &&
+    error.type === "entity.parse.failed"
+  );
+}
+
 export function errorHandler(
   err: unknown,
   req: Request,
@@ -25,6 +34,24 @@ export function errorHandler(
     });
 
     res.status(err.statusCode).json(body);
+    return;
+  }
+
+  if (isMalformedJsonError(err)) {
+    logger.warn("Request failed", {
+      requestId: req.requestId ?? "unknown",
+      code: "INVALID_JSON",
+      status: 400,
+      method: req.method,
+      path: req.path,
+    });
+
+    const body: ApiErrorBody = {
+      status: "error",
+      code: "INVALID_JSON",
+      message: "Request body must contain valid JSON.",
+    };
+    res.status(400).json(body);
     return;
   }
 

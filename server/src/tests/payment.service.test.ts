@@ -34,6 +34,8 @@ const TEST_DB_NAME = "agentshield_payment_test";
 const originalFetch = globalThis.fetch;
 const originalRazorpayEnv = {
   NODE_ENV: process.env.NODE_ENV,
+  CLIENT_URL: process.env.CLIENT_URL,
+  FRONTEND_URL: process.env.FRONTEND_URL,
   RAZORPAY_MODE: process.env.RAZORPAY_MODE,
   RAZORPAY_KEY_ID: process.env.RAZORPAY_KEY_ID,
   RAZORPAY_KEY_SECRET: process.env.RAZORPAY_KEY_SECRET,
@@ -185,6 +187,8 @@ function hasErrorMessage(
 describe("M5 approval and Razorpay execution", () => {
   before(async () => {
     process.env.NODE_ENV = "test";
+    process.env.CLIENT_URL = "https://checkout.example.test";
+    process.env.FRONTEND_URL = "https://legacy.example.test";
     process.env.RAZORPAY_MODE = "test";
     process.env.RAZORPAY_KEY_ID = "rzp_test_dummy_key_id";
     process.env.RAZORPAY_KEY_SECRET = "dummy-test-api-secret";
@@ -444,9 +448,14 @@ describe("M5 approval and Razorpay execution", () => {
     "executes payment only after explicit approval",
     async () => {
       let razorpayCalls = 0;
+      let callbackUrl: string | undefined;
 
-      globalThis.fetch = async () => {
+      globalThis.fetch = async (_input, init) => {
         razorpayCalls += 1;
+        const requestBody = JSON.parse(String(init?.body)) as {
+          callback_url?: string;
+        };
+        callbackUrl = requestBody.callback_url;
 
         return new Response(
           JSON.stringify({
@@ -612,6 +621,10 @@ describe("M5 approval and Razorpay execution", () => {
         });
 
       assert.ok(order);
+      assert.equal(
+        callbackUrl,
+        `https://checkout.example.test/payments/${String(order._id)}`,
+      );
 
       assert.equal(
         order?.status,

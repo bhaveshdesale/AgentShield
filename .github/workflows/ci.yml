@@ -64,9 +64,17 @@ jobs:
         working-directory: server
         run: npm run build
 
-      - name: Test backend
+      - name: Test backend with coverage
         working-directory: server
-        run: npm test
+        run: npm run test:coverage
+
+      - name: Upload backend LCOV coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-lcov
+          path: server/coverage/lcov.info
+          if-no-files-found: ignore
 
       - name: Install frontend dependencies
         working-directory: client

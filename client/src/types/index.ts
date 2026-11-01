@@ -18,8 +18,21 @@ export type ExecutionStatus =
   | "RECOVERED"
   | "BLOCKED";
 
+export const ORDER_STATUSES = [
+  "CREATED",
+  "AWAITING_PAYMENT",
+  "PAID",
+  "FAILED",
+  "UNKNOWN",
+  "RECOVERING",
+  "RECOVERED",
+  "CANCELLED",
+] as const;
+
+export type OrderStatus = (typeof ORDER_STATUSES)[number];
+
 export interface Product {
-  _id: string;
+  id: string;
   name: string;
   description: string;
   priceInPaise: number;
@@ -28,8 +41,6 @@ export interface Product {
   tags: string[];
   inventory: number;
   frequentlyBoughtWith: string[];
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface ActionProposal {
@@ -139,23 +150,28 @@ export interface PaymentResult {
 
 export interface PaymentStatus {
   orderId: string;
-  status: string;
+  status: OrderStatus;
   amountInPaise: number;
-  currency: "INR";
+  currency?: "INR";
   referenceId: string;
 
-  items: PaymentItem[];
+  items?: PaymentItem[];
 
   paymentLinkId?: string;
   paymentLink?: string;
   razorpayPaymentId?: string;
   razorpayStatus?: string;
 
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface PaymentHistoryItem extends PaymentStatus {
+  currency: "INR";
+  items: PaymentItem[];
   createdAt: string;
   updatedAt: string;
 }
-
-export type PaymentHistoryItem = PaymentStatus;
 
 export interface ApproveActionResponse {
   success: true;

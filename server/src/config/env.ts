@@ -26,12 +26,33 @@ function parsePort(raw: string | undefined): number {
     return 5000;
   }
 
-  const port = Number.parseInt(raw, 10);
+  const normalized = raw.trim();
+  if (!/^\+?\d+$/.test(normalized)) {
+    throw new Error("PORT must be an integer between 1 and 65535");
+  }
+
+  const port = Number(normalized);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("PORT must be an integer between 1 and 65535");
   }
 
   return port;
+}
+
+export function getLlmTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = env.LLM_TIMEOUT_MS?.trim();
+  if (configured === undefined || configured === "") {
+    return 30_000;
+  }
+  if (!/^\+?\d+$/.test(configured)) {
+    throw new Error("LLM_TIMEOUT_MS must be an integer between 1 and 2147483647");
+  }
+
+  const timeoutMs = Number(configured);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) {
+    throw new Error("LLM_TIMEOUT_MS must be an integer between 1 and 2147483647");
+  }
+  return timeoutMs;
 }
 
 export function getClientUrl(): string {
@@ -58,6 +79,10 @@ export function getClientUrl(): string {
   return url.origin;
 }
 
+export function getPaymentCallbackUrl(orderId: string): string {
+  return `${getClientUrl()}/payments/${orderId}`;
+}
+
 export function getTrustedProxyHops(env: NodeJS.ProcessEnv = process.env): number {
   const configured = env.TRUST_PROXY_HOPS?.trim();
   if (configured === undefined || configured === "") {
@@ -82,6 +107,7 @@ export function loadEnv(): Env {
     LLM_API_KEY: readOptional("LLM_API_KEY"),
     LLM_BASE_URL: readOptional("LLM_BASE_URL"),
     LLM_MODEL: readOptional("LLM_MODEL"),
+    LLM_TIMEOUT_MS: getLlmTimeoutMs(),
     RAZORPAY_MODE: getRazorpayMode(),
   };
 }

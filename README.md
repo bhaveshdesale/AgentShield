@@ -19,6 +19,8 @@
   <a href="#key-features">Key Features</a> •
   <a href="#getting-started">Getting Started</a> •
   <a href="#api">API</a> •
+  <a href="./docs/DEVELOPMENT.md">Developer Setup</a> •
+  <a href="./docs/ARCHITECTURE.md">Architecture</a> •
   <a href="./CONTRIBUTING.md">Contributing</a>
 </p>
 
@@ -28,7 +30,7 @@
 
 **Track:** AI Growth & Agentic Commerce
 
-AgentShield is an open-source safety and reliability layer for AI-powered commerce. It sits between an AI agent and payment execution, ensuring that an agent can **recommend and propose actions without getting unrestricted authority to move money**.
+AgentShield is a safety and reliability layer for AI-powered commerce. It sits between an AI agent and payment execution, ensuring that an agent can **recommend and propose actions without getting unrestricted authority to move money**.
 
 - The agent **proposes**.
 - AgentShield **decides**.
@@ -215,15 +217,13 @@ This makes the system inspectable and debuggable.
 
 ## Tech Stack
 
-| Layer      | Technology                  |
-|------------|------------------------------|
-| Frontend   | React + TypeScript           |
-| Backend    | Node.js + Express + TypeScript |
-| Database   | MongoDB + Mongoose           |
-| AI         | LLM API                      |
-| Payments   | Razorpay Test APIs           |
-| Build Tool | Vite                          |
-| Runtime    | Node.js                       |
+| Layer      | Technology                                  |
+|------------|----------------------------------------------|
+| Frontend   | React + TypeScript, built with Vite          |
+| Backend    | Node.js + Express + TypeScript               |
+| Database   | MongoDB + Mongoose                           |
+| AI         | Optional OpenAI-compatible API; fallback agent when unconfigured |
+| Payments   | Razorpay Payment Links                       |
 
 ---
 
@@ -231,16 +231,28 @@ This makes the system inspectable and debuggable.
 
 ```text
 AgentShield/
-│
-├── client/                 # React frontend
-├── server/                 # Express + TypeScript backend
-├── AGENTSHIELD_SRS.md      # Software requirements specification
-├── README.md
+├── client/
+│   ├── src/pages/           # React application pages and UI tests
+│   ├── src/services/        # Browser-to-API client
+│   ├── Dockerfile
+│   └── package.json
+├── server/
+│   ├── src/controllers/     # HTTP handlers
+│   ├── src/routes/          # API route registration
+│   ├── src/services/        # Domain, payment, and integration logic
+│   ├── src/models/          # Mongoose models
+│   ├── src/tests/           # Node test-runner tests
+│   ├── Dockerfile
+│   └── package.json
+├── docs/                    # Developer setup and architecture
+├── .github/workflows/       # CI
+├── compose.yaml             # Local frontend, backend, and MongoDB
+├── AGENTSHIELD_SRS.md       # Software requirements specification
 ├── CONTRIBUTING.md
-└── assets/
-    ├── logo.png
-    └── demo.mp4
+└── RELEASING.md             # Release handoff and limitations
 ```
+
+For module responsibilities and request flows, see [Architecture](./docs/ARCHITECTURE.md). For commands and isolated test setup, see [Developer Setup](./docs/DEVELOPMENT.md).
 
 ---
 
@@ -456,7 +468,15 @@ npm run build
 npm audit --audit-level=low
 ```
 
-The tracked `.github/workflows/ci.yml` defines dependency audits, backend and frontend linting, typechecks, production builds, the backend test suite, and frontend tests with coverage. It uses Node.js 22, lockfile-based `npm ci`, and a disposable MongoDB service with dummy Razorpay test credentials. The workflow definition is not proof of a successful remote run; verify the workflow run in GitHub before treating CI as a passed release gate.
+The tracked `.github/workflows/ci.yml` defines dependency audits, backend and frontend linting, typechecks, production builds, and tests with coverage for both packages. It uses Node.js 22, lockfile-based `npm ci`, and a disposable MongoDB service with dummy Razorpay test credentials. The workflow definition is not proof of a successful remote run; verify the workflow run in GitHub before treating CI as a passed release gate.
+
+Backend coverage can also be generated locally from `server/`:
+
+```bash
+npm run test:coverage
+```
+
+The command runs the backend test suite and prints a text summary; it writes an LCOV report to `server/coverage/lcov.info`. Backend coverage currently has no percentage threshold. Client coverage is configured separately in `client/vite.config.ts` and enforces per-file thresholds for the two included payment pages.
 
 ### Release readiness checklist
 

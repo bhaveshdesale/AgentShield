@@ -9,6 +9,12 @@ import {
   apiPaymentHistory,
   apiPaymentStatus,
 } from "../services/api";
+import {
+  displayStatus,
+  formatDate,
+  money,
+  statusClass,
+} from "../utils/payment-display";
 
 import type {
   PaymentHistoryItem,
@@ -16,52 +22,6 @@ import type {
 } from "../types";
 
 import Icon from "../components/Icon";
-
-function money(paise?: number) {
-  if (
-    typeof paise !== "number" ||
-    !Number.isFinite(paise)
-  ) {
-    return "—";
-  }
-
-  return `₹${(paise / 100).toLocaleString(
-    "en-IN",
-  )}`;
-}
-
-function formatDate(value?: string) {
-  if (!value) {
-    return "—";
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return "—";
-  }
-
-  return date.toLocaleString("en-IN", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
-
-function statusClass(status?: string) {
-  return `payment-status ${
-    status
-      ? status.toLowerCase()
-      : "unknown"
-  }`;
-}
-
-function displayStatus(status?: string) {
-  if (!status) {
-    return "UNKNOWN";
-  }
-
-  return status.replaceAll("_", " ");
-}
 
 export default function Payments() {
   const navigate = useNavigate();
@@ -584,5 +544,4 @@ export default function Payments() {
     </section>
   );
 }
-
 

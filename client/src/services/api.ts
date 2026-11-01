@@ -1,13 +1,15 @@
-import type {
-  Action,
-  AgentChatResponse,
-  AuditLogEntry,
-  DashboardStats,
-  PaymentHistoryItem,
-  PaymentResult,
-  PaymentStatus,
-  PolicyEvaluationResult,
-  Product,
+import {
+  ORDER_STATUSES,
+  type Action,
+  type AgentChatResponse,
+  type AuditLogEntry,
+  type DashboardStats,
+  type OrderStatus,
+  type PaymentHistoryItem,
+  type PaymentResult,
+  type PaymentStatus,
+  type PolicyEvaluationResult,
+  type Product,
 } from "../types";
 
 const API_BASE =
@@ -22,6 +24,87 @@ export interface AuthUser {
 
 export function setCsrfToken(token?: string) {
   csrfToken = token;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(isString);
+}
+
+function isOrderStatus(value: unknown): value is OrderStatus {
+  return ORDER_STATUSES.some((status) => status === value);
+}
+
+function isProduct(value: unknown): value is Product {
+  return (
+    isRecord(value) &&
+    isString(value.id) &&
+    isString(value.name) &&
+    isString(value.description) &&
+    isFiniteNumber(value.priceInPaise) &&
+    value.currency === "INR" &&
+    isString(value.category) &&
+    isStringArray(value.tags) &&
+    isFiniteNumber(value.inventory) &&
+    isStringArray(value.frequentlyBoughtWith)
+  );
+}
+
+function isPaymentItem(value: unknown): value is PaymentHistoryItem["items"][number] {
+  return (
+    isRecord(value) &&
+    isString(value.productId) &&
+    isString(value.productName) &&
+    isFiniteNumber(value.quantity) &&
+    isFiniteNumber(value.unitPriceInPaise)
+  );
+}
+
+function isPaymentHistoryItem(value: unknown): value is PaymentHistoryItem {
+  return (
+    isRecord(value) &&
+    isString(value.orderId) &&
+    isString(value.referenceId) &&
+    isFiniteNumber(value.amountInPaise) &&
+    value.currency === "INR" &&
+    isOrderStatus(value.status) &&
+    Array.isArray(value.items) &&
+    value.items.every(isPaymentItem) &&
+    isString(value.createdAt) &&
+    isString(value.updatedAt) &&
+    (value.paymentLinkId === undefined || isString(value.paymentLinkId)) &&
+    (value.paymentLink === undefined || isString(value.paymentLink))
+  );
+}
+
+function isPaymentStatus(value: unknown): value is PaymentStatus {
+  return (
+    isRecord(value) &&
+    isString(value.orderId) &&
+    isOrderStatus(value.status) &&
+    isFiniteNumber(value.amountInPaise) &&
+    isString(value.referenceId) &&
+    (value.currency === undefined || value.currency === "INR") &&
+    (value.items === undefined ||
+      (Array.isArray(value.items) && value.items.every(isPaymentItem))) &&
+    (value.paymentLinkId === undefined || isString(value.paymentLinkId)) &&
+    (value.paymentLink === undefined || isString(value.paymentLink)) &&
+    (value.razorpayPaymentId === undefined || isString(value.razorpayPaymentId)) &&
+    (value.razorpayStatus === undefined || isString(value.razorpayStatus)) &&
+    (value.createdAt === undefined || isString(value.createdAt)) &&
+    (value.updatedAt === undefined || isString(value.updatedAt))
+  );
 }
 
 export async function apiLogin(email: string, password: string) {
@@ -101,6 +184,17 @@ async function request<T>(
   return body as T;
 }
 
+async function requestValidated<T>(
+  path: string,
+  validate: (value: unknown) => value is T,
+): Promise<T> {
+  const body = await request<unknown>(path);
+  if (!validate(body)) {
+    throw new Error("Invalid response from AgentShield API.");
+  }
+  return body;
+}
+
 /**
  * Health
  */
@@ -114,8 +208,16 @@ export const apiHealth = () =>
 /**
  * Products
  */
-export const apiProducts = () =>
-  request<Product[]>("/products");
+export const apiProducts = async (): Promise<Product[]> => {
+  const response = await requestValidated(
+    "/products",
+    (value): value is { products: Product[] } =>
+      isRecord(value) &&
+      Array.isArray(value.products) &&
+      value.products.every(isProduct),
+  );
+  return response.products;
+};
 
 /**
  * Agent chat
@@ -197,8 +299,10 @@ export const apiCreatePayment = (
  * Get all persisted payment/order history.
  */
 export const apiPaymentHistory = () =>
-  request<PaymentHistoryItem[]>(
+  requestValidated(
     "/payments",
+    (value): value is PaymentHistoryItem[] =>
+      Array.isArray(value) && value.every(isPaymentHistoryItem),
   );
 
 /**
@@ -207,10 +311,11 @@ export const apiPaymentHistory = () =>
 export const apiPaymentStatus = (
   orderId: string,
 ) =>
-  request<PaymentStatus>(
+  requestValidated(
     `/payments/${encodeURIComponent(
       orderId,
     )}/status`,
+    isPaymentStatus,
   );
 
 /**

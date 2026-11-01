@@ -7,5 +7,6 @@ export interface Env {
   LLM_API_KEY: string | undefined;
   LLM_BASE_URL: string | undefined;
   LLM_MODEL: string | undefined;
+  LLM_TIMEOUT_MS: number;
   RAZORPAY_MODE: RazorpayMode;
 }
