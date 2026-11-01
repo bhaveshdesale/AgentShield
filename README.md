@@ -5,37 +5,25 @@
 <h1 align="center">AgentShield</h1>
 
 <p align="center">
-  <strong>Trust &amp; Reliability Layer for Agentic Commerce</strong>
+  <strong>Trust &amp; Authorization Layer for Agentic Commerce</strong>
 </p>
 
 <p align="center">
-  AI can propose. Deterministic systems authorize. Razorpay executes.
+  AI can propose. Deterministic systems authorize. Humans approve. Payment providers execute.
 </p>
 
 <p align="center">
-  <a href="#demo">Demo</a> •
-  <a href="#why-agentshield">Why AgentShield?</a> •
-  <a href="#how-it-works">How It Works</a> •
-  <a href="#key-features">Key Features</a> •
-  <a href="#getting-started">Getting Started</a> •
-  <a href="#api">API</a> •
-  <a href="./docs/DEVELOPMENT.md">Developer Setup</a> •
-  <a href="./docs/ARCHITECTURE.md">Architecture</a> •
+  <a href="#overview">Overview</a> ·
+  <a href="#how-it-works">How It Works</a> ·
+  <a href="#capabilities">Capabilities</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#getting-started">Getting Started</a> ·
+  <a href="#testing">Testing</a> ·
+  <a href="#security-model">Security</a> ·
+  <a href="./docs/DEVELOPMENT.md">Developer Guide</a> ·
+  <a href="./docs/ARCHITECTURE.md">Architecture Details</a> ·
   <a href="./CONTRIBUTING.md">Contributing</a>
 </p>
-
----
-
-## Built for Razorpay AI Builder 2026
-
-**Track:** AI Growth & Agentic Commerce
-
-AgentShield is a safety and reliability layer for AI-powered commerce. It sits between an AI agent and payment execution, ensuring that an agent can **recommend and propose actions without getting unrestricted authority to move money**.
-
-- The agent **proposes**.
-- AgentShield **decides**.
-- The customer **approves**.
-- Razorpay **executes**.
 
 ---
 
@@ -57,214 +45,177 @@ The demo walks through the complete AgentShield flow end to end:
 
 ---
 
+## Overview
+
+AI agents are increasingly capable of discovering products, making recommendations, preparing orders, and initiating actions on behalf of users. Giving an agent unrestricted authority over financial operations, however, creates a difficult trust problem: how can an application benefit from agent reasoning without allowing a model to become the authority that moves money?
+
+**AgentShield is an application-level trust and authorization layer for agentic commerce.** It separates AI-generated action proposals from deterministic policy decisions, human approval, and payment execution. The model can help understand a request and propose an action, but server-side application logic remains responsible for deciding whether that action is allowed and whether it can proceed to payment.
+
+The project combines a React application, a Node.js/Express API, MongoDB persistence, an optional OpenAI-compatible model integration, and Razorpay Payment Links. It includes session-based authentication, role checks, CSRF protection, an approval workflow, payment reconciliation, webhook processing, and audit records.
+
+> **Project status:** Active development. The repository contains a developed application, automated tests, local development infrastructure, and release documentation. It does not establish that a production deployment, live payment operation, or production operational controls have been verified. See [RELEASING.md](./RELEASING.md) before any production use.
+
 ## Why AgentShield?
 
-AI agents are becoming capable of taking real actions — including purchasing products, applying discounts, creating orders, and initiating payments.
+An AI model is useful for interpreting customer intent and preparing structured proposals. It should not be trusted as the source of truth for transaction amounts, permissions, inventory, approval decisions, or payment status.
 
-The problem is simple:
+AgentShield introduces a boundary between reasoning and authorization:
 
-> **Should an AI agent be trusted with unrestricted financial authority?**
+- The **agent** interprets the request and proposes an action.
+- The **policy layer** evaluates the proposal against server-side rules and authoritative data.
+- An **authorized user** approves actions that require human review.
+- The **payment service** validates the order state and communicates with the provider.
+- **Reconciliation and audit services** help verify and explain the resulting state.
 
-AgentShield introduces a deterministic control layer between **AI decision-making** and **financial execution**. Instead of letting an AI model directly trigger a payment, every proposed action passes through an independent policy engine before a human ever sees an approval prompt.
-
-```text
-AI Agent
-   ↓
-Action Proposal
-   ↓
-AgentShield Policy Engine
-   ↓
-ALLOW / BLOCK / REVIEW
-   ↓
-Human Approval
-   ↓
-Razorpay Test Mode
-```
-
-This separates reasoning from authorization.
-
-### What AgentShield protects against
-
-AgentShield validates every proposed financial action against deterministic rules, including:
-
-- 💰 Maximum transaction limits
-- 📦 Product availability
-- 🏷️ Discount validation
-- 🔐 Permission requirements
-- 👤 Human approval requirements
-- 🔐 Authenticated user sessions and role-based access
-- 🔁 Duplicate payment protection
-- 🧾 Server-authoritative order totals
-- 🔄 Payment reconciliation
-- 📋 Complete audit history
-
-The AI does not get to override these checks.
-
----
+The central principle is simple: **AI proposes; deterministic application logic authorizes.**
 
 ## How It Works
 
 ```text
-┌──────────────┐
-│   Customer   │
-└──────┬───────┘
-       ↓
-┌──────────────┐
-│   AI Agent   │
-└──────┬───────┘
-       ↓
-┌─────────────────────┐
-│   Action Proposal    │
-└──────────┬───────────┘
-           ↓
-┌───────────────────────┐
-│      AgentShield      │
-│  Policy Validation    │
-└──────────┬─────────────┘
-           ↓
-      ALLOW / BLOCK
-           ↓
-┌───────────────────────┐
-│    Human Approval     │
-└──────────┬─────────────┘
-           ↓
-┌───────────────────────┐
-│   Razorpay Test Mode  │
-└──────────┬─────────────┘
-           ↓
-┌───────────────────────┐
-│ Webhook / Recovery &  │
-│    Reconciliation     │
-└──────────┬─────────────┘
-           ↓
-┌───────────────────────┐
-│     Audit Trail       │
-└───────────────────────┘
+Customer request
+       |
+       v
+AI agent / proposal generation
+       |
+       v
+Structured action proposal
+       |
+       v
+Deterministic policy evaluation
+       |
+       +------ BLOCK ------> Record outcome / audit
+       |
+       +------ REVIEW -----> Authorized human approval
+       |
+       +------ ALLOW ------> Continue according to policy
+                                    |
+                                    v
+                           Server-side order validation
+                                    |
+                                    v
+                           Payment link creation
+                                    |
+                                    v
+                         Webhook / provider status lookup
+                                    |
+                                    v
+                         Reconciliation and recovery
+                                    |
+                                    v
+                                 Audit trail
 ```
 
-### Example agent flow
+The exact path depends on the policy result and approval requirements. The frontend is an interface, not the security boundary: authentication, authorization, CSRF validation, policy evaluation, and payment-state validation take place on the backend.
 
-```text
-Customer:   "Recommend something for my morning coffee."
-                            ↓
-AI Agent:   Recommends a product and proposes an action.
-                            ↓
-AgentShield: Validates price, inventory, policy limits,
-             discounts, and approval requirements.
-                            ↓
-AgentShield: ALLOW
-                            ↓
-Human:      Approves the payment.
-                            ↓
-Razorpay:   Payment Link created.
-                            ↓
-Customer:   Completes payment in Razorpay Test Mode.
-                            ↓
-AgentShield: Reconciles payment state.
-                            ↓
-Audit:      Records the complete action history.
-```
+## Capabilities
 
----
+### Agent-assisted commerce
 
-## Key Features
+- Conversational workflow for customer requests.
+- Product discovery and recommendations from the application catalog.
+- Structured action proposals instead of direct model-controlled payment execution.
+- Optional OpenAI-compatible chat-completions integration.
+- Deterministic fallback behavior when an LLM API key is not configured.
 
-### 🤖 AI-Powered Commerce
-The AI agent can:
-- Understand customer requests
-- Search the product catalog
-- Recommend products and suggest cross-sells
-- Generate structured action proposals
+### Deterministic policy enforcement
 
-### 🛡️ Deterministic Policy Enforcement
-AgentShield independently validates every proposed financial action against:
-- Price
-- Inventory
-- Transaction limits
-- Discounts
-- Permissions
-- Approval requirements
-- Duplicate actions
+- Server-side evaluation using product and merchant data.
+- Validation of transaction constraints, product availability, discounts, and approval requirements.
+- Explicit policy outcomes such as allow, block, or review.
+- Role-based permissions for `admin`, `approver`, and `viewer` users.
+- Human approval workflow for actions requiring authorization.
 
-### ✋ Human Approval Gate
-Financial actions requiring approval cannot bypass the approval step. The AI proposes the action, a human explicitly authorizes it, and only then can payment execution proceed.
+### Payment execution and reliability
 
-### 💳 Razorpay Test Mode
-Approved actions can create Razorpay Payment Links in Test Mode. AgentShield never trusts the AI-generated amount as the final financial authority — the server verifies the authoritative order state before creating the payment.
+- Razorpay Payment Link integration.
+- Server-authoritative order totals; model-generated proposal amounts are not treated as the financial source of truth.
+- Role-checked payment creation and duplicate-action protections.
+- Webhook signature verification against the exact raw request body.
+- Durable webhook event tracking and retryable processing states.
+- Payment status reconciliation and recovery lookup before attempting another payment link.
+- Conditional order-state transitions that prevent a late failure from moving an already-paid order backwards.
 
-### 🔄 Payment Reconciliation
-Payment state is reconciled against Razorpay so that redirect failures, delayed webhooks, or uncertain payment states do not silently produce incorrect local state.
+Webhook processing is designed for recoverable, at-least-once delivery with idempotency protections. It is **not distributed exactly-once processing**: order, action, audit, webhook, and provider operations are not one atomic transaction. For the detailed recovery and failure model, see [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
-#### Webhook retries and recovery
+### Identity, visibility, and operations
 
-Verified webhook event IDs are stored durably before processing. Events move through `PENDING`, `PROCESSING`, `PROCESSED`, and `RETRYABLE_FAILURE`; a processing claim expires after 60 seconds so a later delivery can recover work abandoned by a crashed process. In-progress duplicates receive a retryable response, and payment events whose order is not yet available are not marked complete. Audit entries for a provider event are idempotent.
+- Server-side sessions persisted in MongoDB.
+- Secure, HttpOnly, SameSite=Strict session cookie scoped to `/api`.
+- CSRF validation for state-changing authenticated requests.
+- Interactive user provisioning; there is no public self-registration endpoint.
+- Audit history for important action and payment lifecycle events.
+- Health endpoint that reports MongoDB readiness.
+- Request IDs for correlating API responses with backend logs.
+- Graceful shutdown handling for the HTTP server and MongoDB connection.
 
-Order updates use conditional state transitions: `PAID` can supersede `FAILED` or recovery states, while a late failure cannot move a paid order backwards. Reconciliation claims `UNKNOWN` orders and may reclaim `RECOVERING` claims after 120 seconds; it checks Razorpay before creating another payment link. This is recoverable, at-least-once processing, not a distributed exactly-once guarantee: the order, action, audit, and webhook records are separate MongoDB writes.
+## Architecture
 
-The application initializes the unique webhook-event and idempotent-audit indexes at database connection time. Ensure the application can create/verify these indexes before deploying the new version. Historical webhook rows without retained payload data are treated as already processed and cannot be replayed automatically.
+| Component | Responsibility | Technologies |
+| --- | --- | --- |
+| Web client | Application UI, agent workspace, payments, audit, and simulation views | React, TypeScript, Vite, React Router |
+| API server | Authentication, authorization, policy enforcement, approvals, payments, webhooks, and audit | Node.js, Express, TypeScript |
+| Persistence | Users, sessions, catalog, actions, orders, audit records, and webhook events | MongoDB, Mongoose |
+| Agent integration | Optional model-assisted conversation and structured proposal generation | OpenAI-compatible API |
+| Payment provider | Payment Links and payment-status verification | Razorpay |
 
-### 📋 Audit Trail
-Every important event is recorded throughout the lifecycle:
+### Backend request and service boundaries
 
-```text
-Action Proposed → Action Validated → Action Approved →
-Payment Created → Payment Updated → Payment Reconciled
-```
+The backend is organized around configuration, middleware, routes, controllers, models, and domain services. Routes expose the HTTP API; controllers handle request/response concerns; services contain policy, agent, payment, recovery, webhook, catalog, and audit behavior. The frontend centralizes browser requests, session credentials, and CSRF-token handling in its API client.
 
-This makes the system inspectable and debuggable.
+For a deeper explanation of module responsibilities, request processing, and payment recovery, read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
----
-
-## Tech Stack
-
-| Layer      | Technology                                  |
-|------------|----------------------------------------------|
-| Frontend   | React + TypeScript, built with Vite          |
-| Backend    | Node.js + Express + TypeScript               |
-| Database   | MongoDB + Mongoose                           |
-| AI         | Optional OpenAI-compatible API; fallback agent when unconfigured |
-| Payments   | Razorpay Payment Links                       |
-
----
-
-## Project Structure
+### Repository structure
 
 ```text
 AgentShield/
 ├── client/
-│   ├── src/pages/           # React application pages and UI tests
-│   ├── src/services/        # Browser-to-API client
-│   ├── Dockerfile
-│   └── package.json
+│   └── src/
+│       ├── auth/             # Client authentication state
+│       ├── layouts/          # Application layouts
+│       ├── pages/            # Application pages and UI tests
+│       └── services/         # Browser API client
 ├── server/
-│   ├── src/controllers/     # HTTP handlers
-│   ├── src/routes/          # API route registration
-│   ├── src/services/        # Domain, payment, and integration logic
-│   ├── src/models/          # Mongoose models
-│   ├── src/tests/           # Node test-runner tests
-│   ├── Dockerfile
-│   └── package.json
-├── docs/                    # Developer setup and architecture
-├── .github/workflows/       # CI
-├── compose.yaml             # Local frontend, backend, and MongoDB
-├── AGENTSHIELD_SRS.md       # Software requirements specification
+│   └── src/
+│       ├── config/           # Environment, database, provider configuration
+│       ├── controllers/      # HTTP request handlers
+│       ├── middleware/       # Authentication, CSRF, logging, errors
+│       ├── models/           # MongoDB/Mongoose models
+│       ├── routes/           # API route registration
+│       ├── scripts/          # User provisioning and seed utilities
+│       ├── services/         # Agent, policy, payment, recovery, audit logic
+│       └── tests/            # Backend tests
+├── docs/
+│   ├── ARCHITECTURE.md
+│   └── DEVELOPMENT.md
+├── .github/workflows/        # GitHub Actions CI
+├── assets/                   # Project logo and demo media
+├── compose.yaml              # Local development stack
+├── AGENTSHIELD_SRS.md        # Software requirements specification
 ├── CONTRIBUTING.md
-└── RELEASING.md             # Release handoff and limitations
+└── RELEASING.md              # Release-readiness and operator checklist
 ```
 
-For module responsibilities and request flows, see [Architecture](./docs/ARCHITECTURE.md). For commands and isolated test setup, see [Developer Setup](./docs/DEVELOPMENT.md).
+## Technology Stack
 
----
+- **Frontend:** React 18, TypeScript, Vite, React Router
+- **Backend:** Node.js, Express 4, TypeScript
+- **Database:** MongoDB, Mongoose
+- **AI integration:** Optional OpenAI-compatible chat-completions API
+- **Payments:** Razorpay Payment Links
+- **Testing:** Vitest, Testing Library, Node.js test runner, Monocart coverage
+- **Tooling:** npm lockfiles, ESLint, TypeScript, Docker Compose, GitHub Actions
+
+The CI workflow uses Node.js 22. For the complete local test toolchain, use Node.js 22.15 or newer. See [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for the supported development environment and detailed commands.
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js 22 (used by CI and the Docker build stages; the backend manifest declares `>=18`)
-- npm (included with Node.js)
-- MongoDB 7.0 for local development, or Docker Desktop / Docker Engine with Compose v2
-- Razorpay Test Mode API credentials only if you want to make actual test-mode payment-link requests
-- An OpenAI-compatible LLM API key is optional; without one, the deterministic fallback agent is used
+- Node.js 22.15 or newer
+- npm
+- MongoDB 7.0 for local development, or Docker Desktop / Docker Engine with Docker Compose v2
+- Razorpay Test Mode credentials only when making actual test-mode provider requests
+- An OpenAI-compatible API key is optional
 
 ### 1. Clone the repository
 
@@ -275,60 +226,81 @@ cd AgentShield
 
 ### 2. Install dependencies
 
-```bash
-cd server && npm ci
-cd ../client && npm ci
-```
+Install each package from its lockfile:
 
-In PowerShell, use `Set-Location server; npm ci`, then `Set-Location ..\client; npm ci`.
+```bash
+cd server
+npm ci
+
+cd ../client
+npm ci
+```
 
 ### 3. Configure the backend
 
-Copy the example file and set `MONGODB_URI` to a local development database. The example uses port `5050`; if `PORT` is omitted, the application defaults to `5000`.
+Copy the backend example file:
 
 ```bash
 cp server/.env.example server/.env
 ```
 
-PowerShell equivalent: `Copy-Item server\.env.example server\.env`.
+PowerShell equivalent:
 
-At minimum, configure `MONGODB_URI`. The example sets `CLIENT_URL=http://localhost:5173`, `PORT=5050`, and `RAZORPAY_MODE=test`; the Razorpay credential and webhook-secret fields are intentionally blank. Payment-link creation requires matching test API credentials. Webhook verification requires the test webhook secret. Keep credentials in the ignored local `.env`, never in source control.
+```powershell
+Copy-Item server\.env.example server\.env
+```
 
-`LLM_API_KEY` is optional. When set, the backend uses an OpenAI-compatible chat-completions API; `LLM_BASE_URL` and `LLM_MODEL` can optionally override the default endpoint and model. The API key name is `LLM_API_KEY` (not `OPENAI_API_KEY`). If no LLM key is configured, the application uses its clearly identified deterministic fallback; this is useful for local setup and tests.
+At minimum, set `MONGODB_URI` to a local development database. The example configures `PORT=5050`, `CLIENT_URL=http://localhost:5173`, and `RAZORPAY_MODE=test`.
 
-For local development, point `MONGODB_URI` at a disposable database such as `mongodb://127.0.0.1:27017/agentshield_dev`. Keep test data isolated in a separate database, for example `agentshield_test`; backend integration tests use `MONGODB_TEST_URI` when set and otherwise may use `MONGODB_URI`. Never point either variable at shared or production data. MongoDB must already be running locally, or be provided by a local MongoDB/Docker setup.
+| Variable | Purpose |
+| --- | --- |
+| `NODE_ENV` | Runtime environment; production requires an HTTPS `CLIENT_URL` and an explicit Razorpay mode. |
+| `PORT` | API listen port; defaults to `5000` when omitted. |
+| `MONGODB_URI` | Required MongoDB connection string. |
+| `CLIENT_URL` | Allowed frontend origin; defaults to `http://localhost:5173`. |
+| `TRUST_PROXY_HOPS` | Trusted proxy hop count; defaults to `0`. Set only for a known proxy topology. |
+| `LLM_API_KEY` | Optional model API key. |
+| `LLM_BASE_URL` | Optional OpenAI-compatible API base URL override. |
+| `LLM_MODEL` | Optional model name override. |
+| `LLM_TIMEOUT_MS` | Optional model request timeout; defaults to `30000` ms. |
+| `RAZORPAY_MODE` | `test` or `live`; production requires an explicit setting. |
+| `RAZORPAY_KEY_ID` | Razorpay API key ID; required when creating a payment link. |
+| `RAZORPAY_KEY_SECRET` | Matching Razorpay API key secret. |
+| `RAZORPAY_TEST_WEBHOOK_SECRET` | Secret used to verify Test Mode webhook signatures. |
+| `RAZORPAY_LIVE_WEBHOOK_SECRET` | Secret used to verify Live Mode webhook signatures. |
 
-### Optional frontend API override
+The model integration is optional. The API key variable is named `LLM_API_KEY`, not `OPENAI_API_KEY`. Without an LLM key, the backend uses its deterministic fallback. Razorpay credentials and webhook secrets are intentionally blank in the example file; payment-link creation and webhook verification require the corresponding credentials.
 
-The client defaults `VITE_API_BASE_URL` to `/api`, which the Vite development server proxies to `http://localhost:5050`. No frontend environment file is required for the default local setup. To override the API base URL, copy the example and edit `client/.env`:
+For local development, use a dedicated database such as:
+
+```text
+mongodb://127.0.0.1:27017/agentshield_dev
+```
+
+Keep test data in a separate disposable database, for example `agentshield_test`. Do not point development or test configuration at shared or production data.
+
+### 4. Configure the frontend (optional)
+
+The frontend defaults `VITE_API_BASE_URL` to `/api`. The Vite development server proxies this path to `http://localhost:5050`, so no frontend environment file is required for the default local setup.
+
+To override the API base URL, copy `client/.env.example` to `client/.env` and set `VITE_API_BASE_URL`:
 
 ```bash
 cp client/.env.example client/.env
 ```
 
-PowerShell equivalent: `Copy-Item client\.env.example client\.env`. Vite exposes `VITE_` variables to frontend code; do not put credentials or secrets in this file.
+**Security note:** Vite exposes `VITE_` variables in the browser bundle. Never put passwords, API keys, database URIs, or other secrets in frontend environment variables.
 
-### 4. Provision the first administrator
+### 5. Provision the first administrator
 
-From the server directory, run the interactive CLI:
+There is no public self-registration endpoint. Create an initial local user with the interactive provisioning command:
 
 ```bash
 cd server
 npm run provision-user
 ```
 
-PowerShell from the repository root: `Set-Location server; npm run provision-user`.
-
-Enter the email, select `admin`, and enter and confirm a password of 12–256 characters. Password entry is hidden and the CLI requires an interactive terminal. Repeat to create `approver` or `viewer` accounts. There is no public registration endpoint. Use a disposable local database for setup and do not share provisioned credentials.
-
-### 5. Seed the local demo catalog (optional)
-
-The seed script creates a demo merchant and catalog, but first deletes **all merchant and product records** in the configured database. Run it only against a fresh, disposable local development database when you want the demo catalog; do not run it against shared or production data.
-
-```bash
-cd server
-npm run seed
-```
+Choose the `admin` role and enter a password when prompted. The CLI requires an interactive terminal and hides password input. Additional `approver` and `viewer` accounts can be provisioned the same way. Run this command only against the intended development database.
 
 ### 6. Start the backend
 
@@ -337,7 +309,7 @@ cd server
 npm run dev
 ```
 
-The API listens on `http://localhost:5050` with the supplied example configuration. Check database readiness at `http://localhost:5050/api/health`; it returns `200` when MongoDB is connected and `503` otherwise.
+With the supplied example configuration, the API listens on `http://localhost:5050`. The health endpoint is available at `http://localhost:5050/api/health`; it returns HTTP `200` when MongoDB is connected and `503` otherwise.
 
 ### 7. Start the frontend
 
@@ -348,86 +320,74 @@ cd client
 npm run dev
 ```
 
-Open `http://localhost:5173`. Vite forwards `/api` requests to `http://localhost:5050`. For the Docker Compose setup, see [Docker Compose (local development)](#docker-compose-local-development) below.
+Open [http://localhost:5173](http://localhost:5173). The Vite development server forwards `/api` requests to the backend.
 
----
+### Optional: seed local demo data
 
-## Safety Model
+The seed script creates a demo merchant and catalog. **It deletes all merchant and product records in the database configured by `MONGODB_URI` before seeding.** Run it only against a fresh, disposable local development database. Never run it against shared, staging, or production data.
 
-The central design principle is:
-
-> **AI proposes. Deterministic systems authorize.**
-
-AgentShield intentionally keeps financial authorization outside the LLM. The model can produce an action proposal, but it cannot:
-
-- Change server-side policy
-- Override transaction limits
-- Modify authoritative order totals
-- Bypass required approval
-- Mark a payment as successful without verification
-
-This creates a clear boundary between AI reasoning and financial execution.
-
-### Failure Handling
-
-AgentShield is designed to fail safely before money moves.
-
-If a proposal exceeds a transaction limit, uses unavailable inventory,
-contains an invalid quantity, or violates another policy, it is blocked
-before payment execution.
-
-For uncertain payment states caused by redirects, delayed webhooks, or
-external failures, AgentShield uses reconciliation and recovery instead
-of blindly retrying the payment.
-
-This ensures that failures do not silently turn into duplicate or
-unauthorized transactions.
-
----
-
-## API
-The backend exposes the application flow through the following endpoints:
-
-```http
-POST   /api/auth/login
-GET    /api/auth/session
-POST   /api/auth/logout
-
-POST   /api/agent/chat
-
-GET    /api/products
-GET    /api/products/:id
-
-POST   /api/actions/validate
-POST   /api/actions/approve
-
-POST   /api/payments/create
-GET    /api/payments
-GET    /api/payments/:id/status
-
-POST   /api/webhooks/razorpay
-
-GET    /api/audit
-GET    /api/dashboard/stats
-
-POST   /api/simulation/run
-
-GET    /api/health
+```bash
+cd server
+npm run seed
 ```
 
-The health endpoint and login are public. Application routes require an authenticated session; state-changing authenticated requests also require a CSRF token. The Razorpay webhook is unauthenticated at the session layer but requires a valid signature over the exact raw body and a mode-specific webhook secret.
+For platform-specific instructions and additional configuration notes, see [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md).
 
----
+## Docker Compose
+
+Docker Compose provides a local frontend, backend, and MongoDB stack. From the repository root:
+
+```bash
+docker compose up --build
+```
+
+Open [http://localhost:8080](http://localhost:8080). The browser sends `/api` requests to the frontend origin, and Nginx forwards them to the backend over the internal Compose network.
+
+The Compose configuration uses a persistent MongoDB volume and Razorpay Test Mode defaults. The MongoDB service has no authentication and is intended for local development only. It is not a production database configuration and should not be used as the backend integration-test database.
+
+Stop the stack with:
+
+```bash
+docker compose down
+```
+
+To remove the persistent MongoDB volume and all data stored in it:
+
+```bash
+docker compose down -v
+```
+
+Only run the latter after confirming that the local database contents are no longer needed. For diagnostics, use `docker compose ps`, `docker compose logs -f`, and `curl -i http://localhost:8080/api/health`.
 
 ## Testing
 
-From the repository root, `npm test` runs both the client and server test suites. The client suite needs no backend services. The server suite requires a running, disposable MongoDB test database; set `MONGODB_TEST_URI` to that database and configure dummy Razorpay test values as shown below before running the combined command. To run only the client tests, use `npm run test:client`.
-
-Backend tests use a disposable MongoDB test database and dummy Razorpay credentials; provider requests in the automated tests are mocked. Do not use the persistent Compose database, real customer data, or live payment credentials. MongoDB must be running locally (or provide another disposable MongoDB test instance).
-
-PowerShell:
+The repository provides root-level scripts for running the client and server suites:
 
 ```bash
+npm test
+npm run test:client
+npm run test:server
+```
+
+The client tests run independently. The backend suite includes MongoDB-backed tests and requires a running, **disposable** test database. Use dummy Razorpay Test Mode values; provider interactions in automated tests are mocked. Never point test configuration at production, shared data, or the persistent Compose development database.
+
+### Backend checks
+
+Run from `server/`:
+
+```bash
+npm ci
+npm run lint
+npm run typecheck
+npm run build
+npm test
+npm run test:coverage
+npm audit --audit-level=low
+```
+
+Before backend tests, set `NODE_ENV=test`, `MONGODB_TEST_URI`, `MONGODB_URI`, and dummy Razorpay test variables. Example PowerShell setup, assuming a disposable MongoDB instance is available at `127.0.0.1:27017`:
+
+```powershell
 Set-Location server
 $env:NODE_ENV = "test"
 $env:MONGODB_TEST_URI = "mongodb://127.0.0.1:27017/agentshield_test"
@@ -438,186 +398,99 @@ $env:RAZORPAY_KEY_SECRET = "local-dummy-api-secret"
 $env:RAZORPAY_TEST_WEBHOOK_SECRET = "local-dummy-webhook-secret"
 Remove-Item Env:LLM_API_KEY -ErrorAction SilentlyContinue
 npm test
-npm run lint
-npm run typecheck
-npm run build
-npm audit --audit-level=low
 ```
 
-Portable shell equivalent (run from `server/`):
+The example values are placeholders for local automated tests, not valid provider credentials.
 
-```bash
-env -u LLM_API_KEY NODE_ENV=test \
-  MONGODB_TEST_URI=mongodb://127.0.0.1:27017/agentshield_test \
-  MONGODB_URI=mongodb://127.0.0.1:27017/agentshield_test \
-  RAZORPAY_MODE=test RAZORPAY_KEY_ID=rzp_test_local_dummy \
-  RAZORPAY_KEY_SECRET=local-dummy-api-secret \
-  RAZORPAY_TEST_WEBHOOK_SECRET=local-dummy-webhook-secret \
-  npm test && npm run lint && npm run typecheck && npm run build
-```
+### Frontend checks
 
-Frontend checks (run from `client/`):
+Run from `client/`:
 
 ```bash
 npm ci
 npm run lint
+npm run typecheck
 npm test
 npm run test:coverage
-npm run typecheck
 npm run build
 npm audit --audit-level=low
 ```
 
-The tracked `.github/workflows/ci.yml` defines dependency audits, backend and frontend linting, typechecks, production builds, and tests with coverage for both packages. It uses Node.js 22, lockfile-based `npm ci`, and a disposable MongoDB service with dummy Razorpay test credentials. The workflow definition is not proof of a successful remote run; verify the workflow run in GitHub before treating CI as a passed release gate.
+### Continuous integration
 
-Backend coverage can also be generated locally from `server/`:
+The repository defines a GitHub Actions workflow at `.github/workflows/ci.yml`. It runs on pull requests and pushes to `main`, uses Node.js 22 and a MongoDB 7 service, installs dependencies with `npm ci`, and runs dependency audits, linting, typechecking, builds, and coverage-enabled tests.
 
-```bash
-npm run test:coverage
-```
+A workflow definition is not evidence that the latest run passed. Check the [GitHub Actions runs](https://github.com/bhaveshdesale/AgentShield/actions) for the current result before treating CI as a release gate.
 
-The command runs the backend test suite and prints a text summary; it writes an LCOV report to `server/coverage/lcov.info`. Backend coverage currently has no percentage threshold. Client coverage is configured separately in `client/vite.config.ts` and enforces per-file thresholds for the two included payment pages.
+## API Overview
 
-### Release readiness checklist
+The backend currently exposes the following routes:
 
-The repository does not define release tags, package publishing, or production deployment. Use the repository-specific [release handoff checklist](./RELEASING.md) to review CI-equivalent checks, image limitations, deployment-only security and data-protection gates, and a payment-safe rollback plan. It distinguishes verified repository behavior from checks that require real deployment infrastructure; completing local tests alone does not establish production readiness.
+| Area | Method | Endpoint | Access / purpose |
+| --- | --- | --- | --- |
+| Authentication | `POST` | `/api/auth/login` | Start a user session. |
+| Authentication | `GET` | `/api/auth/session` | Retrieve the current session. |
+| Authentication | `POST` | `/api/auth/logout` | Revoke the current session; requires CSRF validation. |
+| Agent | `POST` | `/api/agent/chat` | Agent conversation; requires an `admin` or `approver` role. |
+| Products | `GET` | `/api/products` | List catalog products. |
+| Products | `GET` | `/api/products/:id` | Retrieve a product. |
+| Actions | `POST` | `/api/actions/validate` | Validate a proposed action; requires an `admin` or `approver` role. |
+| Actions | `POST` | `/api/actions/approve` | Approve an eligible action; requires an `admin` or `approver` role. |
+| Payments | `POST` | `/api/payments/create` | Create a payment link for an eligible action; requires an `admin` or `approver` role. |
+| Payments | `GET` | `/api/payments` | Retrieve payment/order history. |
+| Payments | `GET` | `/api/payments/:id/status` | Retrieve the status of an order. |
+| Webhooks | `POST` | `/api/webhooks/razorpay` | Receive Razorpay events; verifies the provider signature against the raw request body. |
+| Audit | `GET` | `/api/audit` | Retrieve audit history. |
+| Dashboard | `GET` | `/api/dashboard/stats` | Retrieve dashboard statistics. |
+| Simulation | `POST` | `/api/simulation/run` | Run a safety simulation; requires an `admin` or `approver` role. |
+| Health | `GET` | `/api/health` | Check API and MongoDB readiness. |
 
-### Docker Compose (local development)
+Except for login, health, and the provider webhook route, application routes require an authenticated session. State-changing authenticated requests require a CSRF token. Role checks apply to privileged operations as noted above.
 
-Prerequisites: Docker Desktop (or Docker Engine) with the Docker Compose v2 plugin.
+## Security Model
 
-Start the application and MongoDB:
+AgentShield separates responsibilities so that the model is not the authority for financial execution:
 
-```bash
-docker compose up --build
-```
+1. **Proposal:** The agent interprets a request and produces structured proposal data.
+2. **Policy evaluation:** Server-side logic evaluates the proposal against application rules and authoritative data.
+3. **Approval:** An authorized user approves actions that require human review.
+4. **Execution:** The payment service validates the current order/action state and communicates with Razorpay.
+5. **Verification and audit:** Webhooks and provider lookups help reconcile payment state; the application records relevant lifecycle events.
 
-Open the frontend at `http://localhost:8080`. The browser sends `/api` requests to that same origin; Nginx forwards them inside the Compose network to the backend. The browser does not need to resolve the Docker-only backend hostname. Compose configures one trusted proxy hop for client-IP rate limiting; the backend remains unpublished. API endpoints are available under `http://localhost:8080/api/` (for example, `/api/health`).
+Implemented safeguards include session-based authentication, role checks, CSRF validation, Secure/HttpOnly/SameSite session cookies, server-side amount calculation, webhook signature verification, and conditional payment-state updates.
 
-Login throttling currently uses the default process-local memory store from `express-rate-limit`. The counter is effective within a single backend process but is not shared across replicas and resets when a process restarts. Configure a shared rate-limit store at the deployment layer before running multiple backend instances; no shared store is configured by this repository.
+This is an application security design, not a claim of formal verification, independent security certification, or complete protection against every threat. Review the [release handoff](./RELEASING.md) before using the project with real users, sensitive data, or live payment traffic.
 
-Compose uses a persistent MongoDB volume and safe Razorpay test-mode dummy credentials by default. To use local Razorpay test credentials or an LLM key, set `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_TEST_WEBHOOK_SECRET`, or `LLM_API_KEY` in the shell or an ignored root `.env` file before starting. Never put live credentials in the local Compose configuration; Compose fixes `RAZORPAY_MODE` to `test`.
+## Deployment and Operational Status
 
-View logs with `docker compose logs -f`; stop the stack with `docker compose down`. To erase the local MongoDB data and start fresh, run `docker compose down -v` **only after confirming you no longer need that data**—removing the named volume permanently deletes the stored database.
+The repository includes Dockerfiles, a local Compose stack, CI configuration, environment examples, and a release-readiness guide. It does not include evidence of a verified production deployment or a production operations environment.
 
-For local diagnostics, check service state and readiness with:
-
-```bash
-docker compose ps
-curl -i http://localhost:8080/api/health
-docker compose logs --tail=100 backend mongo
-```
-
-The health endpoint returns `200` when MongoDB is connected and `503` otherwise. If the backend does not become healthy, inspect the backend and MongoDB logs for connection or index-initialization failures and verify MongoDB is healthy before restarting the backend with `docker compose restart backend`. Each HTTP response includes an `X-Request-ID`; use that value to find the corresponding backend request and error log entries. Shutdown signals are logged by the backend, which closes its HTTP server before disconnecting from MongoDB.
-
-Run tests from the host with `cd server && npm test`; they require `MONGODB_TEST_URI` pointed at a disposable test database and dummy Razorpay test-mode values. Do not point tests at the persistent Compose development database.
-
-This Compose file is for local development, not production. Its MongoDB service has no authentication and is only reachable on the internal Compose network. Production deployments must configure MongoDB authentication, TLS, backups, network access controls, and managed secrets separately. Serve the application behind HTTPS and configure the backend's production `CLIENT_URL` and explicit Razorpay live-mode settings only in an intentionally secured production environment. The backend waits for MongoDB, creates/verifies its model indexes before listening, reports database readiness through `/api/health`, and drains HTTP requests on `SIGTERM` before disconnecting.
-
----
-
-## Hackathon Context
-
-AgentShield was built for the **Razorpay AI Builder Internship 2026** challenge, under the **AI Growth & Agentic Commerce** track.
-
-The project explores a practical question for the next generation of AI-powered commerce:
-
-> How do we allow AI agents to participate in transactions without giving them unrestricted financial authority?
-
-AgentShield approaches this through policy enforcement, explicit approval, payment verification, reconciliation, and auditability.
-
----
-
-## Scope
-
-### Included
-- AI-assisted product discovery
-- Structured action proposals
-- Deterministic policy validation
-- User authentication, sessions, CSRF, and role-based access
-- Human approval
-- Razorpay Test Mode payments
-- Payment reconciliation
-- Audit logging
-- Simulation scenarios
-- Commerce dashboard
-
-### Intentionally out of scope
-- Production payment processing
-- Public self-service registration
-- Multi-tenant infrastructure
-- Automated refunds
-- Payouts
-- Subscriptions
-- WhatsApp / voice integrations
-- Custom fraud ML
-- Kubernetes / microservice infrastructure
-
-The goal is to keep the prototype focused on the trust boundary between AI agents and financial execution.
-
-User login, eight-hour sessions, logout revocation, CSRF validation, role checks (`admin`, `approver`, `viewer`), and interactive account provisioning are implemented. Razorpay integration is configurable and supports guarded live-mode settings, but local development and automated tests use test-mode configuration and mocked provider calls. No production deployment or live payment operation is established by this repository.
-
----
-
-## Roadmap
-
-- [x] AI agent interaction
-- [x] Product recommendations
-- [x] Structured action proposals
-- [x] Deterministic policy validation
-- [x] Human approval gate
-- [x] Razorpay Test Mode integration
-- [x] Payment status reconciliation
-- [x] Audit trail
-- [x] Payment history
-- [x] Simulation scenarios
-- [ ] Public hosted demo
-- [ ] Expanded policy configuration
-- [ ] More agentic-commerce integrations
-
----
+Production use requires separate configuration and verification of HTTPS, secrets, database network access and backups, provider credentials and webhook delivery, monitoring, rate-limit behavior across replicas, and rollback/data-recovery procedures. The current login rate limiter uses an in-process memory store; its state is not shared across backend replicas. See [RELEASING.md](./RELEASING.md) for the deployment checklist, known limitations, and operator responsibilities.
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to propose changes, report bugs, and submit pull requests.
+Contributions, bug reports, and documentation improvements are welcome.
 
----
+- Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request.
+- For significant features or architectural changes, open an issue to discuss the approach first.
+- Include tests for changes to policy, authorization, payment, webhook, or recovery behavior.
+- Never include real credentials, database URIs, access tokens, or `.env` files in commits or pull requests.
 
-## Security
+## Security Reports
 
-Please never commit:
-
-- API keys
-- Razorpay secrets
-- Database credentials
-- `.env` files
-- Access tokens
-- Private credentials
-
-If you discover a security issue, please report it privately rather than publicly exposing credentials or exploit details.
-
----
-
-## Status
-
-🚧 **Hackathon / Active Development**
-
-AgentShield is currently a working prototype demonstrating the trust and reliability layer for agentic commerce. Razorpay integration currently uses **Test Mode**.
-
----
+Do not publish credentials, exploit details, or sensitive payment data in a public issue. Follow the private reporting guidance in [CONTRIBUTING.md](./CONTRIBUTING.md) and contact the maintainer privately.
 
 ## License
 
-License information will be added as the project is prepared for broader open-source distribution.
-
----
+No `LICENSE` file is currently included in this repository. The repository is publicly viewable on GitHub, but public visibility does not itself grant permission for unrestricted use, modification, or redistribution. A formal open-source license must be added before those rights can be clearly granted.
 
 ## Acknowledgements
 
-Built for the **Razorpay AI Builder 2026** challenge. Inspired by the broader movement toward safer, more reliable, and accountable AI agents operating in real-world commerce.
+AgentShield was initially developed for the Razorpay AI Builder 2026 challenge in the AI Growth & Agentic Commerce track. The project continues to explore how agentic systems can participate in commerce while keeping authorization, human oversight, payment execution, and accountability within application-controlled boundaries.
+
+---
 
 <p align="center">
-  <strong>AgentShield</strong>
-  <br />
+  <strong>AgentShield</strong><br />
   Trust before transaction.
 </p>
