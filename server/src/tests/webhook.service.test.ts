@@ -126,6 +126,35 @@ describe("M6 Razorpay webhook verification and idempotency", () => {
     assert.ok(await AuditLogModel.exists({ event: "ORDER_PAYMENT_CONFIRMED" }));
   });
 
+  it("clears a recovery claim when a verified webhook confirms payment", async () => {
+    await createAwaitingOrder("webhook-recovery-success-001", "plink_recovery_success_001");
+    await OrderModel.updateOne(
+      { referenceId: "webhook-recovery-success-001" },
+      {
+        $set: {
+          status: "RECOVERING",
+          recoveryClaimToken: "webhook-recovery-claim-token",
+        },
+      },
+    );
+
+    const response = await send(
+      paymentLinkPayload(
+        "payment_link.paid",
+        "plink_recovery_success_001",
+        "webhook-recovery-success-001",
+      ),
+      { eventId: "evt-recovery-success-001" },
+    );
+    const order = await OrderModel.findOne({
+      referenceId: "webhook-recovery-success-001",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(order?.status, "PAID");
+    assert.equal(order?.recoveryClaimToken, undefined);
+  });
+
   it("rejects invalid and missing signatures", async () => {
     const rawBody = paymentLinkPayload("payment_link.paid", "plink_invalid_002", "webhook-invalid-002");
     const invalid = await send(rawBody, { eventId: "evt-invalid-002", signatureValue: "not-a-valid-signature" });

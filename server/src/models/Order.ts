@@ -113,6 +113,10 @@ const orderSchema = new Schema<Order>(
       type: String,
       trim: true,
     },
+
+    recoveryClaimToken: {
+      type: String,
+    },
   },
   {
     timestamps: true,

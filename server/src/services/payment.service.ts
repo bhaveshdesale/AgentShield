@@ -18,7 +18,7 @@ import { createOrderSnapshot } from "./payment-order.service";
 import {
   calculateAuthoritativeAmount,
   reconcilePayment,
-} from "./reconciliation.service";
+} from "./payment-recovery.service";
 import type { AuthenticatedUser } from "../types/auth";
 import type {
   Order,
@@ -26,7 +26,7 @@ import type {
 
 export { createRazorpayPaymentLink, getRazorpayCredentials };
 export { calculateAuthoritativeAmount, reconcilePayment };
-export { getPaymentStatusByOrderId } from "./reconciliation.service";
+export { getPaymentStatusByOrderId } from "./payment-status-reconciliation.service";
 export { getPaymentHistoryFromDatabase } from "./payment-history.service";
 export type { PaymentHistoryItem } from "./payment-history.service";
 export { recordAudit } from "./audit.service";

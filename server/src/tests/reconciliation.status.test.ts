@@ -91,7 +91,8 @@ it("reconciles provider status idempotently without regressing a paid order", as
       items: [{ productId: new Types.ObjectId(getCoffeeKitId()), quantity: 1, unitPriceInPaise: 179900 }],
       amountInPaise: 179900,
       currency: "INR",
-      status: "AWAITING_PAYMENT",
+      status: "RECOVERING",
+      recoveryClaimToken: "status-reconcile-claim-token",
       referenceId,
       razorpayPaymentLinkId: "plink_status_reconcile_001",
       razorpayPaymentLinkUrl: "https://rzp.test/plink_status_reconcile_001",
@@ -111,6 +112,10 @@ it("reconciles provider status idempotently without regressing a paid order", as
 
     const paid = await getPaymentStatusByOrderId({ orderId: String(order._id) });
     assert.equal(paid.status, "PAID");
+    assert.equal(
+      (await OrderModel.findById(order._id))?.recoveryClaimToken,
+      undefined,
+    );
     assert.equal((await AgentActionModel.findById(action._id))?.executionStatus, "SUCCEEDED");
     assert.equal(
       await AuditLogModel.countDocuments({

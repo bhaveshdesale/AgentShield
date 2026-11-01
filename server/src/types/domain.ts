@@ -98,6 +98,7 @@ export interface Order {
   razorpayPaymentLinkId: string | undefined;
   razorpayPaymentLinkUrl: string | undefined;
   razorpayPaymentId: string | undefined;
+  recoveryClaimToken?: string;
 
   createdAt: Date;
   updatedAt: Date;

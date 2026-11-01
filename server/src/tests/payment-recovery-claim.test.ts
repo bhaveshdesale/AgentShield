@@ -88,9 +88,15 @@ describe("claimPaymentRecovery", () => {
   it("claims an UNKNOWN order, records its action, and writes the recovery audit", async (t) => {
     const order = orderFixture("UNKNOWN");
     const action = { _id: ACTION_ID };
-    const claimed = {
+    let recoveryClaimToken = "";
+    const claimed: {
+      _id: Types.ObjectId;
+      updatedAt: Date;
+      recoveryClaimToken: string;
+    } = {
       _id: ORDER_ID,
       updatedAt: new Date("2026-11-01T10:00:00.000Z"),
+      recoveryClaimToken: "",
     };
     let findActionQuery: unknown;
     let claimQuery: unknown;
@@ -112,6 +118,10 @@ describe("claimPaymentRecovery", () => {
         claimQuery = filter;
         claimUpdate = update;
         claimOptions = options;
+        recoveryClaimToken = (
+          update as { $set: { recoveryClaimToken: string } }
+        ).$set.recoveryClaimToken;
+        claimed.recoveryClaimToken = recoveryClaimToken;
         return claimed as never;
       },
     );
@@ -128,7 +138,12 @@ describe("claimPaymentRecovery", () => {
 
     const result = await claimPaymentRecovery(String(ORDER_ID));
 
-    assert.deepEqual(result, { order, action, actionId: String(ACTION_ID) });
+    assert.deepEqual(result, {
+      order: claimed,
+      action,
+      actionId: String(ACTION_ID),
+      recoveryClaimToken,
+    });
     assert.deepEqual(findActionQuery, { referenceId: REFERENCE_ID });
     const query = claimQuery as {
       _id: Types.ObjectId;
@@ -142,10 +157,15 @@ describe("claimPaymentRecovery", () => {
     assert.deepEqual(query.$or[1].status, "RECOVERING");
     const cutoff = query.$or[1].updatedAt?.$lte;
     assert.ok(cutoff instanceof Date);
-    assert.deepEqual(claimUpdate, { $set: { status: "RECOVERING" } });
+    assert.deepEqual(claimUpdate, {
+      $set: {
+        status: "RECOVERING",
+        recoveryClaimToken,
+      },
+    });
     assert.deepEqual(claimOptions, { new: true });
     const expectedIdempotencyKey =
-      `recovery:${String(ORDER_ID)}:${claimed.updatedAt.getTime()}`;
+      `recovery:${String(ORDER_ID)}:${recoveryClaimToken}`;
     assert.deepEqual(auditFilter, {
       idempotencyKey: expectedIdempotencyKey,
       event: "RECOVERY_STARTED",
@@ -168,19 +188,28 @@ describe("claimPaymentRecovery", () => {
   });
 
   it("reclaims a stale RECOVERING order", async (t) => {
-    const staleOrder = orderFixture(
-      "RECOVERING",
-      new Date(Date.now() - 121_000),
-    );
+    const staleClaimToken = "stale-recovery-token";
+    const staleOrder = {
+      ...orderFixture("RECOVERING", new Date(Date.now() - 121_000)),
+      recoveryClaimToken: staleClaimToken,
+    };
     let claimQuery: unknown;
+    let recoveryClaimToken: string | undefined;
     t.mock.method(OrderModel, "findById", async () => staleOrder as never);
     t.mock.method(AgentActionModel, "findOne", async () => null);
     t.mock.method(
       OrderModel,
       "findOneAndUpdate",
-      async (filter: unknown) => {
+      async (filter: unknown, update: unknown) => {
         claimQuery = filter;
-        return { _id: ORDER_ID, updatedAt: new Date() } as never;
+        recoveryClaimToken = (
+          update as { $set: { recoveryClaimToken: string } }
+        ).$set.recoveryClaimToken;
+        return {
+          _id: ORDER_ID,
+          updatedAt: new Date(),
+          recoveryClaimToken,
+        } as never;
       },
     );
     t.mock.method(AuditLogModel, "updateOne", () =>
@@ -192,7 +221,12 @@ describe("claimPaymentRecovery", () => {
       $or: Array<{ updatedAt?: { $lte: Date } }>;
     }).$or[1].updatedAt?.$lte;
 
-    assert.equal(result.order, staleOrder);
+    assert.equal(result.order.recoveryClaimToken, recoveryClaimToken);
+    assert.equal(result.recoveryClaimToken, recoveryClaimToken);
+    assert.notEqual(
+      result.recoveryClaimToken,
+      staleClaimToken,
+    );
     assert.equal(result.action, null);
     assert.equal(result.actionId, null);
     assert.ok(staleCutoff instanceof Date);
@@ -219,10 +253,27 @@ describe("claimPaymentRecovery", () => {
   it("propagates recovery audit failures after a successful claim", async (t) => {
     const order = orderFixture("UNKNOWN");
     const auditError = new Error("recovery audit unavailable");
+    let claimToken: string | undefined;
+    let cleanupQuery: unknown;
+    let cleanupUpdate: unknown;
     const claim = t.mock.method(
       OrderModel,
       "findOneAndUpdate",
-      async () => ({ _id: ORDER_ID, updatedAt: new Date() }) as never,
+      async (filter: unknown, update: unknown) => {
+        if (claimToken === undefined) {
+          claimToken = (
+            update as { $set: { recoveryClaimToken: string } }
+          ).$set.recoveryClaimToken;
+          return {
+            _id: ORDER_ID,
+            updatedAt: new Date(),
+            recoveryClaimToken: claimToken,
+          } as never;
+        }
+        cleanupQuery = filter;
+        cleanupUpdate = update;
+        return null as never;
+      },
     );
     t.mock.method(OrderModel, "findById", async () => order as never);
     t.mock.method(AgentActionModel, "findOne", async () => null);
@@ -234,6 +285,14 @@ describe("claimPaymentRecovery", () => {
       claimPaymentRecovery(String(ORDER_ID)),
       (error: unknown) => error === auditError,
     );
-    assert.equal(claim.mock.callCount(), 1);
+    assert.equal(claim.mock.callCount(), 2);
+    assert.equal(
+      (cleanupQuery as { recoveryClaimToken: string }).recoveryClaimToken,
+      claimToken,
+    );
+    assert.deepEqual(cleanupUpdate, {
+      $set: { status: "UNKNOWN" },
+      $unset: { recoveryClaimToken: 1 },
+    });
   });
 });

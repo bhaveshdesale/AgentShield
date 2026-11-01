@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Types } from "mongoose";
 import { AgentActionModel } from "../models/AgentAction";
 import { OrderModel } from "../models/Order";
@@ -45,6 +46,7 @@ export async function claimPaymentRecovery(orderId: string) {
   const actionId = action ? String(action._id) : null;
 
   const staleRecoveryCutoff = new Date(Date.now() - RECOVERY_LEASE_MS);
+  const recoveryClaimToken = randomUUID();
   const claimed = await OrderModel.findOneAndUpdate(
     {
       _id: order._id,
@@ -56,6 +58,7 @@ export async function claimPaymentRecovery(orderId: string) {
     {
       $set: {
         status: "RECOVERING",
+        recoveryClaimToken,
       },
     },
     {
@@ -71,12 +74,54 @@ export async function claimPaymentRecovery(orderId: string) {
     );
   }
 
-  await recordIdempotentAudit(
-    "RECOVERY_STARTED",
-    { orderId: String(order._id) },
-    `recovery:${String(order._id)}:${claimed.updatedAt.getTime()}`,
-    actionId ?? undefined,
+  try {
+    await recordIdempotentAudit(
+      "RECOVERY_STARTED",
+      { orderId: String(order._id) },
+      `recovery:${String(order._id)}:${recoveryClaimToken}`,
+      actionId ?? undefined,
+    );
+  } catch (error) {
+    await OrderModel.findOneAndUpdate(
+      {
+        _id: order._id,
+        status: "RECOVERING",
+        recoveryClaimToken,
+      },
+      {
+        $set: { status: "UNKNOWN" },
+        $unset: { recoveryClaimToken: 1 },
+      },
+    );
+    throw error;
+  }
+
+  return {
+    order: claimed,
+    action,
+    actionId,
+    recoveryClaimToken,
+  };
+}
+
+export async function refreshPaymentRecoveryLease(
+  orderId: Types.ObjectId,
+  recoveryClaimToken: string,
+): Promise<boolean> {
+  const renewed = await OrderModel.findOneAndUpdate(
+    {
+      _id: orderId,
+      status: "RECOVERING",
+      recoveryClaimToken,
+    },
+    {
+      $set: { updatedAt: new Date() },
+    },
+    {
+      new: true,
+      timestamps: false,
+    },
   );
 
-  return { order, action, actionId };
+  return renewed !== null;
 }

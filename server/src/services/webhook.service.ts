@@ -137,7 +137,12 @@ async function applyPaymentTransition(
       _id: order._id,
       status: { $in: allowedPriorStates },
     },
-    { $set: { status: transition } },
+    transition === "PAID"
+      ? {
+          $set: { status: transition },
+          $unset: { recoveryClaimToken: 1 },
+        }
+      : { $set: { status: transition } },
     { new: true },
   );
   const currentOrder = updated ?? await OrderModel.findById(order._id);
