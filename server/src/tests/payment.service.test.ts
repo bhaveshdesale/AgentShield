@@ -1053,11 +1053,13 @@ describe("M5 approval and Razorpay execution", () => {
         new Response(
           JSON.stringify({
             error: {
+              code: "BAD_REQUEST_ERROR",
               description: "declined",
+              field: "amount",
             },
           }),
           {
-            status: 500,
+            status: 400,
           },
         );
 

@@ -151,6 +151,7 @@ it("ignores unknown provider statuses and leaves local state unchanged on lookup
       new Response(
         JSON.stringify({
           id: "plink_status_reconcile_002",
+          short_url: "https://rzp.test/plink_status_reconcile_002",
           reference_id: "status-reconcile-unknown-002",
           status: "pending_review",
         }),
