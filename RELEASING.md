@@ -50,6 +50,62 @@ The rollback checklist below remains mandatory: retain prior image/configuration
 
 ## Deployment verification — required outside this repository
 
+### Recommended Render staging topology
+
+The recommended starting topology is a Render Static Site for the frontend and a Render Web Service for the backend, using custom HTTPS subdomains under the same registered domain:
+
+- Frontend: `https://app.<your-domain>`
+- Backend API: `https://api.<your-domain>`
+- MongoDB: a dedicated MongoDB Atlas database and application user
+- Payments: Razorpay Test Mode until a separately reviewed production decision
+
+These are placeholders, not configured or verified domains. This repository does not include a Render blueprint or service configuration. An operator must create and configure both Render services and attach the custom domains.
+
+Documenting this topology is not evidence that it has been configured, tested, or approved for deployment.
+
+Configure the backend Web Service with root directory `server`, build command `npm ci && npm run build`, start command `npm start`, and health-check path `/api/health`. Configure the frontend Static Site with root directory `client`, build command `npm ci && npm run build`, and publish directory `dist`.
+
+Set the frontend build-time variable `VITE_API_BASE_URL` to `https://api.<your-domain>/api`. Set the backend `CLIENT_URL` to exactly `https://app.<your-domain>`. The API calls are cross-origin because the hostnames differ, so the browser uses CORS; the backend currently allows the configured client origin with credentials. The frontend already sends credentialed requests. Keep the session cookie host-only on the API host; do not broaden its cookie domain.
+
+The two HTTPS subdomains are same-site but not same-origin. Origin includes scheme, host, and port, so `https://app.<your-domain>` and `https://api.<your-domain>` are different origins. They are same-site because they use HTTPS under the same registrable domain. This matters because the session cookie is `SameSite=Strict`: same-site requests can send it, but cross-origin requests still need credentialed CORS and the frontend's `credentials: "include"`. State-changing API calls must continue to include the CSRF token header. Do not assume that separately generated Render domains have this same-site relationship.
+
+#### Render environment variables
+
+Configure these on the indicated service without putting secret values in source, build commands, or frontend variables:
+
+| Service | Variable | Configuration |
+| --- | --- | --- |
+| Backend | `NODE_ENV` | Set to `production`, including for staging so production HTTPS validation is exercised. |
+| Backend | `MONGODB_URI` | Required Atlas connection URI for the dedicated staging database and least-privilege application user. |
+| Backend | `CLIENT_URL` | Exact frontend HTTPS origin, `https://app.<your-domain>`; no path or trailing route. |
+| Backend | `RAZORPAY_MODE` | Set explicitly to `test` for staging. |
+| Backend | `RAZORPAY_KEY_ID` | Razorpay Test Mode key ID. |
+| Backend | `RAZORPAY_KEY_SECRET` | Matching Razorpay Test Mode API secret. |
+| Backend | `RAZORPAY_TEST_WEBHOOK_SECRET` | Secret configured for the Razorpay Test Mode webhook. |
+| Backend | `PORT` | Use the port provided by Render; the application reads this variable and defaults to `5000` only when it is absent. |
+| Backend | `TRUST_PROXY_HOPS` | Set only after verifying the proxy topology and the hop count observed by Express. |
+| Frontend | `VITE_API_BASE_URL` | `https://api.<your-domain>/api`; this is embedded at frontend build time and must not contain secrets. |
+
+#### DNS, Atlas, and Razorpay operator setup
+
+- Add `app.<your-domain>` to the Render Static Site and `api.<your-domain>` to the Render Web Service, then configure the DNS records Render specifies for each service. Verify both domains resolve to their intended services and receive valid HTTPS certificates before browser testing.
+- Configure Atlas network access for the backend service's current outbound IP range or other supported, operator-verified egress control. Avoid broad public access rules. Use TLS, a dedicated least-privilege database user, and only the staging database; ensure that user can create or verify the indexes required at application startup. Never use production data for staging.
+- In the Razorpay Test Mode dashboard, configure the webhook URL as `https://api.<your-domain>/api/webhooks/razorpay`. This route is mounted in the application at `/api/webhooks` and handles `POST /razorpay`. Set the matching Test Mode webhook secret as `RAZORPAY_TEST_WEBHOOK_SECRET`; do not configure live credentials or a live webhook for staging.
+
+#### Staging verification for this topology
+
+Perform these checks in an isolated staging environment using staging accounts, test data, and Razorpay Test Mode only. Do not treat successful checks as deployment or production approval.
+
+- [ ] Confirm the frontend and API custom domains both serve HTTPS and route to the intended Render services. Confirm the frontend build uses the API URL above and backend CORS permits only the exact `CLIENT_URL`.
+- [ ] Sign in with a staging account. In browser developer tools, verify the API response sets the Secure, HttpOnly, SameSite=Strict session cookie on the API host, credentialed requests include it, and there are no CORS or browser cookie errors.
+- [ ] Reload the frontend and verify session restoration through `GET /api/auth/session`; confirm authenticated read-only API calls succeed.
+- [ ] Perform an authorized state-changing request with the session's CSRF token and confirm it succeeds. Repeat without a token and with an invalid token; confirm both are rejected.
+- [ ] Log out through the frontend, confirm the logout request includes the CSRF token, then verify the session cookie is cleared and a later session request returns `401`.
+- [ ] Verify `GET /api/health` reports `status=ok` and `mongodb=connected`; confirm it reports an unhealthy status if the backend cannot reach its database in an approved staging fault test.
+- [ ] Exercise approval and payment flows only with Razorpay Test Mode credentials and dummy/test entities. Confirm order state and audit records; do not initiate live payments.
+- [ ] Send a Test Mode webhook to the configured endpoint. Confirm valid signatures are accepted, invalid signatures are rejected, and duplicate/retry deliveries do not create duplicate final transitions or audit effects.
+- [ ] Record the tested service configuration, deployed revision, health result, and any failures. Keep cookies, CSRF tokens, database URIs, and provider credentials out of screenshots, tickets, and logs.
+
 ### Configuration and access
 
 - [ ] Inject secrets through the deployment secret manager. Configure `MONGODB_URI`, `CLIENT_URL` (an HTTPS origin in production), `PORT` as needed, and `TRUST_PROXY_HOPS` for the real proxy chain. `LLM_API_KEY` is optional. Do not use the example or Compose dummy credentials in a deployment.
