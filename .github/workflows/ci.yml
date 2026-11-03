@@ -54,7 +54,7 @@ jobs:
 
       - name: Lint backend
         working-directory: server
-        run: npm run lint
+        run: npm run lint:ci
 
       - name: Typecheck backend
         working-directory: server
@@ -86,7 +86,7 @@ jobs:
 
       - name: Lint frontend
         working-directory: client
-        run: npm run lint
+        run: npm run lint:ci
 
       - name: Typecheck frontend
         working-directory: client

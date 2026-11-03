@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src vite.config.ts --ext .ts,.tsx",
+    "lint:ci": "eslint src vite.config.ts --ext .ts,.tsx --max-warnings 0",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"
   },
