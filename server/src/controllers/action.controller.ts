@@ -7,6 +7,7 @@ import { recordAudit } from "../services/audit.service";
 import { evaluateAction } from "../services/policy.service";
 import { AppError } from "../utils/AppError";
 import { logger } from "../utils/logger";
+import { recordPolicyDecision } from "../utils/metrics";
 import {
   AGENT_ACTION_TYPES,
   type ActionProposalInput,
@@ -130,6 +131,7 @@ export async function validateAction(
     }
 
     const result: PolicyEvaluationResult = await evaluateAction(proposal, merchant.policy);
+    recordPolicyDecision(result.decision);
     const conversationId =
       isRecord(body) &&
       typeof body.conversationId === "string" &&

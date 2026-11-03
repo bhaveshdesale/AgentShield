@@ -1,4 +1,5 @@
 import { AppError } from "../utils/AppError";
+import { recordPaymentLinkCreationFailure } from "../utils/metrics";
 import { getRazorpayCredentials } from "../config/razorpay";
 import type { RazorpayCredentials } from "../config/razorpay";
 import { logger } from "../utils/logger";
@@ -262,6 +263,7 @@ export async function createRazorpayPaymentLink(options: {
       status: parsed.status,
     };
   } catch (error) {
+    recordPaymentLinkCreationFailure();
     if (error instanceof AppError) {
       throw error;
     }

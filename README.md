@@ -442,7 +442,8 @@ The backend currently exposes the following routes:
 | Webhooks       | `POST` | `/api/webhooks/razorpay`   | Receive Razorpay events; verifies the provider signature against the raw request body. |
 | Audit          | `GET`  | `/api/audit`               | Retrieve audit history.                                                                |
 | Dashboard      | `GET`  | `/api/dashboard/stats`     | Retrieve dashboard statistics.                                                         |
-| Simulation     | `POST` | `/api/simulation/run`      | Run a safety simulation; requires an `admin` or `approver` role.                       |
+| Operations     | `GET`  | `/api/metrics`              | Retrieve Prometheus text-format application counters; admin only.                     |
+| Simulation     | `POST` | `/api/simulation/run`       | Run a safety simulation; requires an `admin` or `approver` role.                       |
 | Health         | `GET`  | `/api/health`              | Check API and MongoDB readiness.                                                       |
 
 Except for login, health, and the provider webhook route, application routes require an authenticated session. State-changing authenticated requests require a CSRF token. Role checks apply to privileged operations as noted above.
@@ -466,6 +467,8 @@ This is an application security design, not a claim of formal verification, inde
 The repository includes Dockerfiles, a local Compose stack, CI configuration, environment examples, and a release-readiness guide. It does not include evidence of a verified production deployment or a production operations environment.
 
 Production use requires separate configuration and verification of HTTPS, secrets, database network access and backups, provider credentials and webhook delivery, monitoring, rate-limit behavior across replicas, and rollback/data-recovery procedures. The current login rate limiter uses an in-process memory store; its state is not shared across backend replicas. See [RELEASING.md](./RELEASING.md) for the deployment checklist, known limitations, and operator responsibilities.
+
+The admin-only `/api/metrics` endpoint exposes bounded process-local counters for policy decisions, payment-link creation failures, and claimed webhook retries. Counters reset when a process restarts and are not aggregated across replicas. They provide basic operational visibility only; they are not a substitute for a production monitoring backend, durable metrics storage, alerting, or error-tracking service.
 
 ## Contributing
 

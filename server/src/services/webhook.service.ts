@@ -6,6 +6,7 @@ import { WebhookEventModel } from "../models/WebhookEvent";
 import { getRazorpayWebhookSecret } from "../config/razorpay";
 import { recordIdempotentAudit } from "./audit.service";
 import { AppError } from "../utils/AppError";
+import { recordWebhookRetry } from "../utils/metrics";
 
 type RazorpayPayload = Record<string, unknown>;
 type WebhookOutcome = "PAID" | "FAILED" | "IGNORED" | "NO_CHANGE";
@@ -293,7 +294,7 @@ export async function processRazorpayWebhook(
       },
       $inc: { attempts: 1 },
     },
-    { new: true },
+    { new: false },
   );
 
   if (!claimed) {
@@ -310,6 +311,15 @@ export async function processRazorpayWebhook(
       503,
       "WEBHOOK_PROCESSING",
     );
+  }
+
+  if (
+    claimed.status === "RETRYABLE_FAILURE" ||
+    (claimed.status === "PROCESSING" &&
+      claimed.leaseExpiresAt !== undefined &&
+      claimed.leaseExpiresAt <= now)
+  ) {
+    recordWebhookRetry();
   }
 
   try {

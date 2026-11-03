@@ -6,6 +6,7 @@ import { productRouter } from "./product.routes";
 import { auditRouter } from "./audit.routes";
 import { dashboardRouter } from "./dashboard.routes";
 import { simulationRouter } from "./simulation.routes";
+import { metricsRouter } from "./metrics.routes";
 
 const apiRouter = Router();
 
@@ -16,5 +17,6 @@ apiRouter.use("/products", productRouter);
 apiRouter.use("/audit", auditRouter);
 apiRouter.use("/dashboard", dashboardRouter);
 apiRouter.use("/simulation", simulationRouter);
+apiRouter.use("/metrics", metricsRouter);
 
 export { apiRouter };
